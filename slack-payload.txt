@@ -1,0 +1,28 @@
+{
+  "channel": "@thu",
+  "username": "Zoidberg",
+  "icon_emoji": ":zoidberg:",
+
+  "text": "A new Docker image is available:",
+  "attachments": [
+    {
+      "color": "#7CF197",
+      "fields": [
+        {
+          "title": "Repository",
+          "value": "__REPOSITORY__",
+          "short": true
+        },
+        {
+          "title": "Branch",
+          "value": "__BRANCH__",
+          "short": true
+        },
+        {
+          "value": "```docker pull __IMAGE__```"
+        }
+      ],
+      "mrkdwn_in": ["fields"]
+    }
+  ]
+}
