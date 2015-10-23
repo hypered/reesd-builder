@@ -18,12 +18,14 @@ The builder needs:
 
 - An optional `.dockercfg` file (when present, it is used to push the image).
 
-    > docker run \
-        -v /var/run/docker.sock:/var/run/docker.sock \
-        -v /path/to/github-deploy-ssh:/home/worker/.ssh \
-        -v /path/to/dockercfg:/home/worker/.dockercfg \
-        images.reesd.com/reesd/builder \
-          /home/worker/checkout-and-build.sh \
-          git@github.com:hypered/reesd-hello.git \
-          reesd-hello.git \
-          master
+```
+> docker run \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v /path/to/github-deploy-ssh:/home/worker/.ssh \
+    -v /path/to/dockercfg:/home/worker/.dockercfg \
+    images.reesd.com/reesd/builder \
+      /home/worker/checkout-and-build.sh \
+      git@github.com:hypered/reesd-hello.git \
+      reesd-hello.git \
+      master
+```
