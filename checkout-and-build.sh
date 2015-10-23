@@ -24,7 +24,7 @@ for i in `find /home/worker/checkout -name Imagename` ; do
   sudo docker build --force-rm --no-cache -t ${imagename} $(dirname $i)
   if [ -f /home/worker/.dockercfg ] ; then
     echo "Pushing ${imagename}..."
-    sudo docker push ${imagename}
+    sudo docker push ${imagename}${TAG:-:latest}
   fi
   if [ -f /slack-hook-url.txt ] ; then
     HOOK=$(cat /slack-hook-url.txt)
