@@ -20,11 +20,12 @@ echo "Checkout of $1 $2 $3..."
 /home/worker/checkout.sh $1 $2 $3
 for i in `find /home/worker/checkout -name Imagename` ; do
   imagename=$(cat $i)${TAG}
+  pushname=$(cat $i)${TAG:-:latest}
   echo "Building ${imagename}..."
   sudo docker build --force-rm --no-cache -t ${imagename} $(dirname $i)
   if [ -f /home/worker/.dockercfg ] ; then
-    echo "Pushing ${imagename}..."
-    sudo docker push ${imagename}${TAG:-:latest}
+    echo "Pushing ${pushname}..."
+    sudo docker push ${pushname}
   fi
   if [ -f /slack-hook-url.txt ] ; then
     HOOK=$(cat /slack-hook-url.txt)
