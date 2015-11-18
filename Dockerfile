@@ -22,6 +22,7 @@ ADD clone.sh /home/worker/
 ADD checkout.sh /home/worker/
 ADD checkout-and-build.sh /home/worker/
 ADD slack-payload.txt /
+ADD build-info.txt /
 
 USER worker
 ENV HOME /home/worker
