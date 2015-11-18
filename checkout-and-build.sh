@@ -30,7 +30,7 @@ for i in `find /home/worker/checkout -name Imagename` ; do
     | sed -e "s=__REPOSITORY__=$1=" \
     | sed -e "s=__BRANCH__=$3=" \
     | sed -e "s=__COMMIT__=${commit}=" \
-    | sed -e "s=__IMAGE__=${imagename}=" \
+    | sed -e "s=__IMAGE__=${pushname}=" \
     > ${imagedir}/BUILD-INFO
   echo "ADD BUILD-INFO /" >> ${imagedir}/Dockerfile
   sudo docker build --force-rm --no-cache -t ${imagename} ${imagedir}
