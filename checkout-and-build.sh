@@ -2,6 +2,8 @@
 
 # Build the Dockerfile for which there is an Imagename.
 
+set -e
+
 # Only build master or blue branches.
 case "$3" in
   "master")

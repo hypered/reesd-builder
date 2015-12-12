@@ -4,6 +4,8 @@
 # /home/worker/gits, so that directory can be a volume shared with a host if
 # the clone must be retained. The checkout is done in /home/worker/checkout
 
+set -e
+
 cd gits
 if [ -d "/home/worker/gits/$2" ] ; then
   git --git-dir /home/worker/gits/$2 fetch -q --tags

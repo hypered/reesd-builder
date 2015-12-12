@@ -18,9 +18,6 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get install -q -y lxc-docker-1.3.3
 RUN useradd -s /bin/bash -m worker
 RUN echo "worker ALL = (root) NOPASSWD: /usr/bin/docker" > /etc/sudoers.d/docker
 
-ADD clone.sh /home/worker/
-ADD checkout.sh /home/worker/
-ADD checkout-and-build.sh /home/worker/
 ADD slack-payload.txt /
 ADD build-info.txt /
 
@@ -28,6 +25,10 @@ USER worker
 ENV HOME /home/worker
 ENV LANG en_US.UTF-8
 WORKDIR /home/worker
+
+ADD clone.sh /home/worker/
+ADD checkout.sh /home/worker/
+ADD checkout-and-build.sh /home/worker/
 
 RUN mkdir /home/worker/gits
 RUN mkdir /home/worker/checkout
