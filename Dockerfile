@@ -13,7 +13,7 @@ RUN apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 \
 RUN echo deb https://get.docker.com/ubuntu docker main > \
   /etc/apt/sources.list.d/docker.list
 RUN apt-get update
-RUN DEBIAN_FRONTEND=noninteractive apt-get install -q -y lxc-docker-1.3.3
+RUN DEBIAN_FRONTEND=noninteractive apt-get install -q -y lxc-docker-1.6.2
 
 RUN useradd -s /bin/bash -m worker
 RUN echo "worker ALL = (root) NOPASSWD: /usr/bin/docker" > /etc/sudoers.d/docker
