@@ -4,12 +4,12 @@
 
 set -e
 
-# Only build master or blue branches.
+# Only build master, blue, pink, green, yellow, sandbox, and sandbox2 branches.
 case "$3" in
   "master")
     TAG=""
     ;;
-  "blue")
+  "blue" | "pink" | "green" | "yellow" | "sandbox" | "sandbox2")
     TAG=":${3}"
     ;;
   *)
