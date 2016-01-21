@@ -38,7 +38,7 @@ for i in `find /home/worker/checkout -name Imagename` ; do
   sudo docker build --force-rm --no-cache -t ${imagename} ${imagedir}
 
   if [ -f /home/worker/.dockercfg ] ; then
-    echo "Pushing ${pushname}..."
+    echo "Pushing image ${pushname}..."
     sudo docker push ${pushname}
   fi
 
