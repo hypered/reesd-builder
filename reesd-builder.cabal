@@ -1,0 +1,35 @@
+name:                reesd-builder
+version:             0.0.0
+Cabal-Version:       >= 1.8
+synopsis:            Build script for Dockerfile found in Git repositories.
+description:
+  reesd-builder clone Git repositories and build Dockerfiles.
+category:            System
+license:             BSD3
+license-file:        LICENSE
+author:              Vo Minh Thu
+maintainer:          thu@hypered.io
+build-type:          Simple
+
+library
+  build-depends:
+                       aeson,
+                       attoparsec,
+                       base == 4.*,
+                       bytestring,
+                       cmdargs,
+                       directory,
+                       filemanip,
+                       filepath,
+                       process
+  exposed-modules:     Reesd.Commands.Build
+  other-modules:       Paths_reesd_builder
+  ghc-options:         -Wall
+
+executable reesd-build
+  hs-source-dirs:      bin
+  main-is:             reesd-build.hs
+  build-depends:       base == 4.*,
+                       cmdargs,
+                       reesd-builder
+  ghc-options:         -Wall

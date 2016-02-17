@@ -7,6 +7,7 @@ RUN update-locale LANG=en_US.UTF-8
 
 RUN DEBIAN_FRONTEND=noninteractive apt-get install -q -y curl git
 RUN DEBIAN_FRONTEND=noninteractive apt-get install -q -y apt-transport-https
+RUN DEBIAN_FRONTEND=noninteractive apt-get install -q -y libgmp10
 
 RUN apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 \
   --recv-keys 36A1D7869245C8950F966E92D8576A8BA88D21E9
@@ -29,6 +30,8 @@ WORKDIR /home/worker
 ADD clone.sh /home/worker/
 ADD checkout.sh /home/worker/
 ADD checkout-and-build.sh /home/worker/
+ADD dist/build/reesd-build/reesd-build /usr/bin/
 
+RUN mkdir /home/worker/.ssh
 RUN mkdir /home/worker/gits
 RUN mkdir /home/worker/checkout

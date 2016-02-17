@@ -29,3 +29,54 @@ The builder needs:
       reesd-hello.git \
       master
 ```
+
+
+## Multi repositories
+
+It can be useful to be able to clone multiple repositories before building a
+single image. The script `build` supports multiple repositories.
+
+The "main" repository, the one provided through the `--repo` option, should
+contain a Dockerfile at its root. The other repositories, given using the
+`--graft` option, are checked out within the main one.
+
+```
+docker run \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /home/thu/projects/reesd-builder/ssh-keys:/home/worker/ssh-keys:ro \
+  -v /home/thu/.dockercfg:/home/worker/.dockercfg:ro \
+  images.reesd.com/reesd/builder \
+  reesd-build build \
+  --repo git@github.com:noteed/reesd-multi-hello \
+  --graft git@github.com:noteed/reesd-hello-1 \
+  --graft git@github.com:noteed/reesd-hello-2 \
+  --image images.reesd.com/reesd/multi-hello \
+  --clone
+```
+
+If cloning is not desired, e.g. you provide the repositories through bind
+mounting, you can leave out the `--clone` flag:
+
+```
+docker run \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /home/thu/projects/reesd-multi-hello/.git:/home/worker/gits/reesd-multi-hello.git \
+  -v /home/thu/projects/reesd-hello-1/.git:/home/worker/gits/reesd-hello-1.git \
+  -v /home/thu/projects/reesd-hello-2/.git:/home/worker/gits/reesd-hello-2.git \
+  -v /home/thu/.dockercfg:/home/worker/.dockercfg:ro \
+  images.reesd.com/reesd/builder \
+  reesd-build build \
+  --repo git@github.com:noteed/reesd-multi-hello \
+  --graft git@github.com:noteed/reesd-hello-1 \
+  --graft git@github.com:noteed/reesd-hello-2 \
+  --image images.reesd.com/reesd/multi-hello
+```
+
+The script creates a directory hierarchy that looks like
+
+```
+- reesd-multi-repo/
+  - Dockerfile
+  - reesd-repo-1/
+  - reesd-repo-2/
+```
