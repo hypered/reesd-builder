@@ -180,7 +180,7 @@ runCmd CmdBuild{..} = do
 -- | Clone a repository, or if it was already clone, update it.
 -- The clone is in /home/worker/gits/<repository-name>.
 -- To clone from GitHub, SSH keys are expected to be found in
--- /home/worker/ssh-keys/<repository-name>/id_rsa and id_rsa.pub.
+-- /home/worker/ssh-keys/<repository-name>/id_rsa.
 cloneOrUpdate GitUrl{..} = do
       putStrLn ("Cloning/updating GitHub repository " ++ gitUrlUsername ++ "/" ++ gitUrlRepository ++ "...")
 
@@ -194,7 +194,6 @@ cloneOrUpdate GitUrl{..} = do
       when f'' (renameFile "/home/worker/.ssh/known_hosts" "/home/worker/.ssh/known_hosts.original")
 
       copyFile ("/home/worker/ssh-keys" </> gitUrlRepository </> "id_rsa") "/home/worker/.ssh/id_rsa"
-      copyFile ("/home/worker/ssh-keys" </> gitUrlRepository </> "id_rsa.pub") "/home/worker/.ssh/id_rsa.pub"
       copyFile ("/home/worker/ssh-keys/known_hosts") "/home/worker/.ssh/known_hosts"
 
       e <- doesDirectoryExist ("/home/worker/gits" </> gitUrlRepository <.> "git")
