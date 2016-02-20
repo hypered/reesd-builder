@@ -173,7 +173,7 @@ runCmd CmdBuild{..} = do
 
       -- TODO Exit if push failed.
 
-      maybeNotifySlack gitUrlRepository "master" cmdImage
+      maybeNotifySlack gitUrlRepository gitUrlBranch cmdImage
 
 
 ------------------------------------------------------------------------------
@@ -239,7 +239,7 @@ checkout graft GitUrl{..} = do
       (code, out, err) <- readProcessWithExitCode "git"
         [ "--git-dir", "/home/worker/gits" </> gitUrlRepository <.> "git"
         , "--work-tree", dir
-        , "checkout", "master", "--", "."
+        , "checkout", gitUrlBranch, "--", "."
         ]
         ""
       putStrLn out
@@ -257,7 +257,7 @@ buildDockerfile GitUrl{..} imagename = do
       LB.writeFile (dir_ </> "BUILD-INFO") (encode BuildInfo
         { biRepository = "git@github.com:" ++
             (gitUrlUsername </> gitUrlRepository) ++ ".git"
-        , biBranch = "master" -- TODO
+        , biBranch = gitUrlBranch
         , biCommit = "TODO"
         , biImage = imagename
         })
@@ -299,6 +299,7 @@ maybeNotifySlack repository branch imagename = do
 data GitUrl = GitUrl
   { gitUrlUsername :: String
   , gitUrlRepository :: String
+  , gitUrlBranch :: String
   }
 
 gitUrlParser = GitUrl
@@ -308,6 +309,8 @@ gitUrlParser = GitUrl
   <* (C.char '/')
   <*> (BC.unpack <$> C.takeWhile1 (C.inClass "-a-zA-Z0-9" ))
   <* (C.option ".git" (C.string ".git"))
+  <*> (C.option "master"
+    (C.char '#' *> (BC.unpack <$> C.takeWhile1 (C.inClass "-a-zA-Z0-9" ))))
   <* C.endOfInput
 
 

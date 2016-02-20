@@ -1,7 +1,7 @@
 all: .builder_touched
 
 .builder_touched: Dockerfile checkout-and-build.sh dist/build/reesd-build/reesd-build
-	docker build -t images.reesd.com/reesd/builder .
+	docker build -t images.reesd.com/reesd/builder:multi .
 	touch .builder_touched
 
 reesd-builder-docker-image.tar.xz: .builder_touched
