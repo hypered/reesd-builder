@@ -11,9 +11,9 @@ module Reesd.Commands.Build where
 -- TODO Read arguments as json on stdin.
 -- TODO Respect branch/tag names.
 
-import Control.Monad (when)
+import Control.Monad (mzero, when)
 import Data.Aeson
-  ( encode, fromJSON, object, Value(Object), Result(..), FromJSON(..), ToJSON(..), (.:)
+  ( decode, encode, fromJSON, object, Value(Object), Result(..), FromJSON(..), ToJSON(..), (.:)
   , (.=) )
 import qualified Data.ByteString.Lazy as LB
 import Data.Either (isRight, rights)
@@ -69,6 +69,7 @@ data Cmd =
     , cmdImage :: String
     , cmdClone :: Bool
     }
+  | CmdInput
   | Help
   | Version
   | None
@@ -78,6 +79,7 @@ buildModes :: Mode Cmd
 buildModes = (modes "reesd-build" None "Build Dockerfiles."
   [ buildCloneMode
   , buildBuildMode
+  , buildInputMode
   ])
   { modeGroupFlags = toGroup
     [ flagHelpSimple (const Help)
@@ -95,6 +97,11 @@ buildBuildMode = mode' "build" buildBuild
   "Build a Dockerfile."
   (buildCommonFlags ++ buildBuildFlags)
 
+buildInputMode :: Mode Cmd
+buildInputMode = mode' "input" buildInput
+  "Build a Dockerfile."
+  []
+
 buildClone = CmdClone
   { cmdRepository = ""
   , cmdGrafts = []
@@ -106,6 +113,8 @@ buildBuild = CmdBuild
   , cmdImage = ""
   , cmdClone = False
   }
+
+buildInput = CmdInput
 
 buildCommonFlags =
   [ flagReq ["repository"]
@@ -147,11 +156,21 @@ runCmd CmdBuild{..} = do
   case (mgitUrl, all isRight mgitUrls) of
     (Left err, _) -> putStrLn err
     (_, False) -> error "TODO"
-    (Right gu@GitUrl{..}, True) -> do
+    (Right gu@GitUrl{..}, True) -> build cmdClone gu (rights mgitUrls) cmdImage
 
-      when cmdClone $ do
+runCmd CmdInput{..} = do
+  content <- LB.getContents
+  print content
+  case decode content of
+    Nothing -> putStrLn "Can't decode stdin input."
+    Just BuildInput{..} -> build True inGitUrl inGrafts inImage
+
+
+------------------------------------------------------------------------------
+build clone gu grafts image = do
+      when clone $ do
         cloneOrUpdate gu
-        mapM_ cloneOrUpdate (rights mgitUrls)
+        mapM_ cloneOrUpdate grafts
 
       -- TODO Exit if clone/update failed.
 
@@ -163,20 +182,19 @@ runCmd CmdBuild{..} = do
       putStrLn "Found Dockerfile:"
       mapM_ (putStrLn . ("  " ++)) dockerfiles
 
-      mapM_ (checkout True) (rights mgitUrls)
+      mapM_ (checkout True) grafts
 
-      buildDockerfile gu cmdImage
+      buildDockerfile gu image
 
       -- TODO Exit if build failed.
 
-      maybePushImage cmdImage
+      maybePushImage image
 
       -- TODO Exit if push failed.
 
-      maybeNotifySlack gitUrlRepository gitUrlBranch cmdImage
+      maybeNotifySlack (gitUrlRepository gu) (gitUrlBranch gu) image
 
 
-------------------------------------------------------------------------------
 -- | Clone a repository, or if it was already clone, update it.
 -- The clone is in /home/worker/gits/<repository-name>.
 -- To clone from GitHub, SSH keys are expected to be found in
@@ -301,6 +319,7 @@ data GitUrl = GitUrl
   , gitUrlRepository :: String
   , gitUrlBranch :: String
   }
+  deriving Show
 
 gitUrlParser = GitUrl
   <$> ((C.string "git@github.com" <?> "GitHub git/ssh only for now")
@@ -313,6 +332,9 @@ gitUrlParser = GitUrl
     (C.char '#' *> (BC.unpack <$> C.takeWhile1 (C.inClass "-a-zA-Z0-9" ))))
   <* C.endOfInput
 
+formatGitUrl GitUrl{..} =
+  "git@github.com:" ++ gitUrlUsername ++ "/" ++ gitUrlRepository
+  ++ ".git#" ++ gitUrlBranch
 
 ------------------------------------------------------------------------------
 data BuildInfo = BuildInfo
@@ -331,6 +353,45 @@ instance ToJSON BuildInfo where
     , "image" .= biImage
     ]
 
+
+------------------------------------------------------------------------------
+-- | This is similar to the `build` command flags (i.e. `--repo`, `--graft`).
+-- `--clone` is implied. Grafts are given as a list of repositories
+-- For example:
+-- { "image": "images.reesd.com/reesd/hello",
+--   "repository": "git@github.com:hypered/reesd-hello.git#master"
+-- }
+data BuildInput = BuildInput
+  { inGitUrl :: GitUrl
+  , inImage :: String
+  , inGrafts :: [GitUrl]
+  }
+  deriving Show
+
+instance ToJSON BuildInput where
+  toJSON BuildInput{..} = object
+    [ "repository" .= formatGitUrl inGitUrl
+    , "image" .= inImage
+    , "grafts" .= map formatGitUrl inGrafts
+    ]
+
+instance FromJSON BuildInput where
+  parseJSON (Object v) = do
+    repository <- v .: "repository"
+    image <- v .: "image"
+    grafts <- v.: "grafts"
+
+    let mgitUrl = parseOnly gitUrlParser (BC.pack repository)
+        mgitUrls = map (parseOnly gitUrlParser . BC.pack) grafts
+    case (mgitUrl, all isRight mgitUrls) of
+      (Left err, _) -> mzero
+      (_, False) -> mzero
+      (Right gu, True) -> return BuildInput
+        { inGitUrl = gu
+        , inImage = image
+        , inGrafts = rights mgitUrls
+        }
+  parseJSON _ = mzero
 
 ------------------------------------------------------------------------------
 data SlackNotification = SlackNotification
