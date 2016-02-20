@@ -1,6 +1,0 @@
-{
-  "repository": "__REPOSITORY__",
-  "branch": "__BRANCH__",
-  "commit": "__COMMIT__",
-  "image": "__IMAGE__"
-}
