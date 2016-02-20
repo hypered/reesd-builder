@@ -1,0 +1,7 @@
+{ "repository": "git@github.com:noteed/reesd-multi-hello#master",
+  "image": "images.reesd.com/reesd/multi-hello",
+  "grafts": [
+    "git@github.com:noteed/reesd-hello-1.git#master",
+    "git@github.com:noteed/reesd-hello-2"
+  ]
+}

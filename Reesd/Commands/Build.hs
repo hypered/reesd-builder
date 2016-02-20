@@ -159,8 +159,7 @@ runCmd CmdBuild{..} = do
     (Right gu@GitUrl{..}, True) -> build cmdClone gu (rights mgitUrls) cmdImage
 
 runCmd CmdInput{..} = do
-  content <- LB.getContents
-  print content
+  content <- LB.readFile "/input.json"
   case decode content of
     Nothing -> putStrLn "Can't decode stdin input."
     Just BuildInput{..} -> build True inGitUrl inGrafts inImage
