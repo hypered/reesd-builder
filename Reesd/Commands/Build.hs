@@ -14,7 +14,7 @@ module Reesd.Commands.Build where
 import Control.Monad (mzero, when)
 import Data.Aeson
   ( decode, encode, fromJSON, object, Value(Object), Result(..), FromJSON(..), ToJSON(..), (.:)
-  , (.=) )
+  , (.=), (.:?) )
 import qualified Data.ByteString.Lazy as LB
 import Data.Either (isRight, rights)
 import Data.Version (showVersion)
@@ -378,10 +378,10 @@ instance FromJSON BuildInput where
   parseJSON (Object v) = do
     repository <- v .: "repository"
     image <- v .: "image"
-    grafts <- v.: "grafts"
+    mgrafts <- v.:? "grafts"
 
     let mgitUrl = parseOnly gitUrlParser (BC.pack repository)
-        mgitUrls = map (parseOnly gitUrlParser . BC.pack) grafts
+        mgitUrls = maybe [] (map (parseOnly gitUrlParser . BC.pack)) mgrafts
     case (mgitUrl, all isRight mgitUrls) of
       (Left err, _) -> mzero
       (_, False) -> mzero
