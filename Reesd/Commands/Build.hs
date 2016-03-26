@@ -189,14 +189,14 @@ build clone gu grafts image dockerfile cache = do
       e <- doesDirectoryExist "/home/worker/checkout"
       when e (removeDirectoryRecursive "/home/worker/checkout")
 
-      checkout False gu
+      commit <- checkout False gu
       dockerfiles <- find always (fileName ==? "Dockerfile") "/home/worker/checkout"
       putStrLn "Found Dockerfile:"
       mapM_ (putStrLn . ("  " ++)) dockerfiles
 
       mapM_ (checkout True) grafts
 
-      buildDockerfile gu image dockerfile cache
+      buildDockerfile gu image dockerfile cache commit
 
       -- TODO Exit if build failed.
 
@@ -259,25 +259,35 @@ cloneOrUpdate GitUrl{..} = do
 -- | Checkout a Git repository to /home/worker/checkout. If `graft` is True,
 -- then create the checkout in a sub-directory. The goal is to have the main
 -- Dockerfile "see" the graft checkouts and include them in its build context.
-checkout :: Bool -> GitUrl -> IO ()
+checkout :: Bool -> GitUrl -> IO String
 checkout graft GitUrl{..} = do
-      putStrLn ("Creating checkout...")
-      let dir_ = "/home/worker/checkout"
-          dir = if graft then (dir_ </> gitUrlRepository) else  dir_
-      -- The work-tree directory must exist before calling `git checkout`.
-      createDirectoryIfMissing False dir
-      (code, out, err) <- readProcessWithExitCode "git"
-        [ "--git-dir", "/home/worker/gits" </> gitUrlRepository <.> "git"
-        , "--work-tree", dir
-        , "checkout", gitUrlBranch, "--", "."
-        ]
-        ""
-      putStrLn out
-      putStrLn err
+  putStrLn ("Creating checkout...")
+  let dir_ = "/home/worker/checkout"
+      dir = if graft then (dir_ </> gitUrlRepository) else  dir_
+  -- The work-tree directory must exist before calling `git checkout`.
+  createDirectoryIfMissing False dir
+  (code, out, err) <- readProcessWithExitCode "git"
+    [ "--git-dir", "/home/worker/gits" </> gitUrlRepository <.> "git"
+    , "--work-tree", dir
+    , "checkout", gitUrlBranch, "--", "."
+    ]
+    ""
+  putStrLn out
+  putStrLn err
+
+  putStrLn ("Reading branch SHA1...")
+  (code, out, err) <- readProcessWithExitCode "git"
+    [ "--git-dir", "/home/worker/gits" </> gitUrlRepository <.> "git"
+    , "rev-parse", gitUrlBranch
+    ]
+    ""
+  putStrLn out
+  putStrLn err
+  return (head (words out)) -- TODO
 
 -- | Run `docker build`. The Dockerfile path is given relative to
 -- /home/worker/checkout.
-buildDockerfile GitUrl{..} imagename dockerfile cache = do
+buildDockerfile GitUrl{..} imagename dockerfile cache commit = do
       let dir_ = "/home/worker/checkout"
 
       -- TODO Test whether there is a Dockerfile.
@@ -291,7 +301,7 @@ buildDockerfile GitUrl{..} imagename dockerfile cache = do
               { biRepository = "git@github.com:" ++
                   (gitUrlUsername </> gitUrlRepository) ++ ".git"
               , biBranch = gitUrlBranch
-              , biCommit = "TODO"
+              , biCommit = commit
               , biImage = imagename
               })
           appendFile (dir_ </> dockerfile) "ADD BUILD-INFO /"
