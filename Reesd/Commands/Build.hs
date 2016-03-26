@@ -21,7 +21,7 @@ import Data.Version (showVersion)
 import Paths_reesd_builder (version)
 import System.Console.CmdArgs.Explicit
 import System.Directory (copyFile, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive, renameFile)
-import System.FilePath ((</>), (<.>))
+import System.FilePath (dropFileName, (</>), (<.>))
 import System.FilePath.Find
 import System.Process (rawSystem, readProcessWithExitCode)
 
@@ -67,7 +67,9 @@ data Cmd =
     { cmdRepository :: String
     , cmdGrafts :: [String]
     , cmdImage :: String
+    , cmdDockerfile :: String
     , cmdClone :: Bool
+    , cmdCache :: Bool
     }
   | CmdInput
   | Help
@@ -111,7 +113,9 @@ buildBuild = CmdBuild
   { cmdRepository = ""
   , cmdGrafts = []
   , cmdImage = ""
+  , cmdDockerfile = "Dockerfile"
   , cmdClone = False
+  , cmdCache = False
   }
 
 buildInput = CmdInput
@@ -132,9 +136,16 @@ buildBuildFlags =
       (\x r -> Right (r { cmdImage = x }))
       "IMAGE"
       "Image name."
+  , flagReq ["dockerfile"]
+      (\x r -> Right (r { cmdDockerfile = x }))
+      "DOCKERFILE"
+      "Path to the Dockerfile to build."
   , flagBool ["clone"]
       (\x r -> r { cmdClone = x })
       "Clone repositories (don't assume they already exist)."
+  , flagBool ["cache"]
+      (\x r -> r { cmdCache = x })
+      "Don't pass --no-cache to docker build."
   ]
 
 
@@ -156,17 +167,19 @@ runCmd CmdBuild{..} = do
   case (mgitUrl, all isRight mgitUrls) of
     (Left err, _) -> putStrLn err
     (_, False) -> error "TODO"
-    (Right gu@GitUrl{..}, True) -> build cmdClone gu (rights mgitUrls) cmdImage
+    (Right gu@GitUrl{..}, True) ->
+      build cmdClone gu (rights mgitUrls) cmdImage cmdDockerfile cmdCache
 
 runCmd CmdInput{..} = do
   content <- LB.readFile "/input.json"
   case decode content of
     Nothing -> putStrLn "Can't decode stdin input."
-    Just BuildInput{..} -> build True inGitUrl inGrafts inImage
+    Just BuildInput{..} ->
+      build True inGitUrl inGrafts inImage inDockerfile inCache
 
 
 ------------------------------------------------------------------------------
-build clone gu grafts image = do
+build clone gu grafts image dockerfile cache = do
       when clone $ do
         cloneOrUpdate gu
         mapM_ cloneOrUpdate grafts
@@ -183,7 +196,7 @@ build clone gu grafts image = do
 
       mapM_ (checkout True) grafts
 
-      buildDockerfile gu image
+      buildDockerfile gu image dockerfile cache
 
       -- TODO Exit if build failed.
 
@@ -262,32 +275,44 @@ checkout graft GitUrl{..} = do
       putStrLn out
       putStrLn err
 
--- | Run `docker build`. The Dockerfile is assumed to be at the root of
+-- | Run `docker build`. The Dockerfile path is given relative to
 -- /home/worker/checkout.
-buildDockerfile GitUrl{..} imagename = do
+buildDockerfile GitUrl{..} imagename dockerfile cache = do
       let dir_ = "/home/worker/checkout"
 
       -- TODO Test whether there is a Dockerfile.
+      f <- doesFileExist (dir_ </> dockerfile)
+      if f
+        then do
+          -- Write a BUILD-INFO file.
+          -- TODO Pretty-print the json.
+          LB.writeFile (dir_ </> dropFileName dockerfile </> "BUILD-INFO")
+            (encode BuildInfo
+              { biRepository = "git@github.com:" ++
+                  (gitUrlUsername </> gitUrlRepository) ++ ".git"
+              , biBranch = gitUrlBranch
+              , biCommit = "TODO"
+              , biImage = imagename
+              })
+          appendFile (dir_ </> dockerfile) "ADD BUILD-INFO /"
 
-      -- Write a BUILD-INFO file.
-      -- TODO Pretty-print the json.
-      LB.writeFile (dir_ </> "BUILD-INFO") (encode BuildInfo
-        { biRepository = "git@github.com:" ++
-            (gitUrlUsername </> gitUrlRepository) ++ ".git"
-        , biBranch = gitUrlBranch
-        , biCommit = "TODO"
-        , biImage = imagename
-        })
-      appendFile (dir_ </> "Dockerfile") "ADD BUILD-INFO /"
+          -- Run docker build.
+          -- TODO Give a parameter for --no-cache.
+          (code, out, err) <- readProcessWithExitCode "sudo"
+            ([ "docker", "build", "--force-rm"
+            ] ++
+            (if cache then [] else ["--no-cache"]) ++
+            [ "-t", imagename
+            , dir_ </> dropFileName dockerfile
+            ])
+            ""
+          putStrLn out
+          putStrLn err
+          return True
 
-      -- Run docker build.
-      -- TODO Give a parameter for --no-cache.
-      (code, out, err) <- readProcessWithExitCode "sudo"
-        [ "docker", "build", "--force-rm", "--no-cache", "-t", imagename, dir_
-        ]
-        ""
-      putStrLn out
-      putStrLn err
+        else do
+          putStrLn ("Can't find Dockerfile " ++ (dir_ </> dockerfile) ++ ".")
+          return False
 
 -- | Possibly push an image if credentials are given in /home/worker/.dockercfg.
 maybePushImage imagename = do
@@ -335,6 +360,8 @@ formatGitUrl GitUrl{..} =
   "git@github.com:" ++ gitUrlUsername ++ "/" ++ gitUrlRepository
   ++ ".git#" ++ gitUrlBranch
 
+parseGitUrl = parseOnly gitUrlParser . BC.pack
+
 ------------------------------------------------------------------------------
 data BuildInfo = BuildInfo
   { biRepository :: String
@@ -364,6 +391,8 @@ data BuildInput = BuildInput
   { inGitUrl :: GitUrl
   , inImage :: String
   , inGrafts :: [GitUrl]
+  , inDockerfile :: String
+  , inCache :: Bool
   }
   deriving Show
 
@@ -372,6 +401,8 @@ instance ToJSON BuildInput where
     [ "repository" .= formatGitUrl inGitUrl
     , "image" .= inImage
     , "grafts" .= map formatGitUrl inGrafts
+    , "dockerfile" .= inDockerfile
+    , "cache" .= inCache
     ]
 
 instance FromJSON BuildInput where
@@ -379,6 +410,8 @@ instance FromJSON BuildInput where
     repository <- v .: "repository"
     image <- v .: "image"
     mgrafts <- v.:? "grafts"
+    mdockerfile <- v.:? "dockerfile"
+    mcache <- v.:? "cache"
 
     let mgitUrl = parseOnly gitUrlParser (BC.pack repository)
         mgitUrls = maybe [] (map (parseOnly gitUrlParser . BC.pack)) mgrafts
@@ -389,6 +422,8 @@ instance FromJSON BuildInput where
         { inGitUrl = gu
         , inImage = image
         , inGrafts = rights mgitUrls
+        , inDockerfile = maybe "Dockerfile" id mdockerfile
+        , inCache = maybe False id mcache
         }
   parseJSON _ = mzero
 
