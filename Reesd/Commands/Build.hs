@@ -210,7 +210,7 @@ build channel clone gu grafts image dockerfile cache = do
 
       -- TODO Exit if push failed.
 
-      maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) image
+      maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) image commit
 
 
 -- | Clone a repository, or if it was already clone, update it.
@@ -341,13 +341,13 @@ maybePushImage imagename = do
     putStrLn out
     putStrLn err
 
-maybeNotifySlack channel repository branch imagename = do
+maybeNotifySlack channel repository branch imagename commit = do
   -- TODO Use env var instead.
   f <- doesFileExist "/slack-hook-url.txt"
   when f $ do
     putStrLn ("Notifying Slack for " ++ imagename ++ "...")
     hookUrl <- readFile "/slack-hook-url.txt"
-    let sn = slackNotification channel repository branch imagename
+    let sn = slackNotification channel repository branch imagename commit
     post hookUrl (toJSON sn)
     return ()
 
@@ -489,7 +489,7 @@ instance ToJSON SlackField where
       if sfShort then ["short" .= True] else []
 
 -- `channel` can be e.g. "@thu" or "#general".
-slackNotification channel repository branch imagename = SlackNotification
+slackNotification channel repository branch imagename commit = SlackNotification
   { snChannel = channel
   , snUsername = "Zoidberg"
   , snIconEmoji = ":zoidberg:"
@@ -507,6 +507,11 @@ slackNotification channel repository branch imagename = SlackNotification
           { sfMaybeTitle = Just "Branch"
           , sfValue = branch
           , sfShort = True
+          }
+        , SlackField
+          { sfMaybeTitle = Just "Commit"
+          , sfValue = commit
+          , sfShort = False
           }
         , SlackField
           { sfMaybeTitle = Nothing
