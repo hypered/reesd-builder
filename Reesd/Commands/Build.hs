@@ -202,15 +202,20 @@ build channel clone gu grafts image dockerfile cache = do
 
       mapM_ (checkout True) grafts
 
-      buildDockerfile gu image dockerfile cache commit
+      -- TODO Sanitize input, e.g. branch name.
+      let branch = gitUrlBranch gu
+          tag = if branch == "master" then "latest" else branch
+          imagename = if ':' `elem` image then image else image ++ ":" ++ tag
+
+      buildDockerfile gu imagename dockerfile cache commit
 
       -- TODO Exit if build failed.
 
-      maybePushImage image
+      maybePushImage imagename
 
       -- TODO Exit if push failed.
 
-      maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) image commit
+      maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename commit
 
 
 -- | Clone a repository, or if it was already clone, update it.
