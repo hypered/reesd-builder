@@ -21,7 +21,9 @@ library
                        directory,
                        filemanip,
                        filepath,
-                       process
+                       lens,
+                       process,
+                       wreq
   exposed-modules:     Reesd.Commands.Build
   other-modules:       Paths_reesd_builder
   ghc-options:         -Wall

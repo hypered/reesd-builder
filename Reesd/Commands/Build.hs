@@ -6,11 +6,10 @@
 module Reesd.Commands.Build where
 
 -- TODO docker push (done but check if it works).
--- TODO slack notification
 -- TODO write artifacts file
--- TODO Read arguments as json on stdin.
 -- TODO Respect branch/tag names.
 
+import Control.Lens ((.~))
 import Control.Monad (mzero, when)
 import Data.Aeson
   ( decode, encode, fromJSON, object, Value(Object), Result(..), FromJSON(..), ToJSON(..), (.:)
@@ -19,6 +18,7 @@ import qualified Data.ByteString.Lazy as LB
 import Data.Either (isRight, rights)
 import Data.Version (showVersion)
 import Paths_reesd_builder (version)
+import Network.Wreq (defaults, param, post, postWith)
 import System.Console.CmdArgs.Explicit
 import System.Directory (copyFile, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive, renameFile)
 import System.FilePath (dropFileName, (</>), (<.>))
@@ -70,6 +70,7 @@ data Cmd =
     , cmdDockerfile :: String
     , cmdClone :: Bool
     , cmdCache :: Bool
+    , cmdChannel :: String
     }
   | CmdInput
   | Help
@@ -116,6 +117,7 @@ buildBuild = CmdBuild
   , cmdDockerfile = "Dockerfile"
   , cmdClone = False
   , cmdCache = False
+  , cmdChannel = "#general"
   }
 
 buildInput = CmdInput
@@ -146,6 +148,10 @@ buildBuildFlags =
   , flagBool ["cache"]
       (\x r -> r { cmdCache = x })
       "Don't pass --no-cache to docker build."
+  , flagReq ["channel"]
+      (\x r -> Right (r { cmdChannel = x }))
+      "CHANNEL"
+      "Slack channel where to post (default to #general)."
   ]
 
 
@@ -168,18 +174,18 @@ runCmd CmdBuild{..} = do
     (Left err, _) -> putStrLn err
     (_, False) -> error "TODO"
     (Right gu@GitUrl{..}, True) ->
-      build cmdClone gu (rights mgitUrls) cmdImage cmdDockerfile cmdCache
+      build cmdChannel cmdClone gu (rights mgitUrls) cmdImage cmdDockerfile cmdCache
 
 runCmd CmdInput{..} = do
   content <- LB.readFile "/input.json"
   case decode content of
     Nothing -> putStrLn "Can't decode stdin input."
     Just BuildInput{..} ->
-      build True inGitUrl inGrafts inImage inDockerfile inCache
+      build inChannel True inGitUrl inGrafts inImage inDockerfile inCache
 
 
 ------------------------------------------------------------------------------
-build clone gu grafts image dockerfile cache = do
+build channel clone gu grafts image dockerfile cache = do
       when clone $ do
         cloneOrUpdate gu
         mapM_ cloneOrUpdate grafts
@@ -204,7 +210,7 @@ build clone gu grafts image dockerfile cache = do
 
       -- TODO Exit if push failed.
 
-      maybeNotifySlack (gitUrlRepository gu) (gitUrlBranch gu) image
+      maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) image
 
 
 -- | Clone a repository, or if it was already clone, update it.
@@ -307,7 +313,6 @@ buildDockerfile GitUrl{..} imagename dockerfile cache commit = do
           appendFile (dir_ </> dockerfile) "ADD BUILD-INFO /"
 
           -- Run docker build.
-          -- TODO Give a parameter for --no-cache.
           (code, out, err) <- readProcessWithExitCode "sudo"
             ([ "docker", "build", "--force-rm"
             ] ++
@@ -336,15 +341,14 @@ maybePushImage imagename = do
     putStrLn out
     putStrLn err
 
-maybeNotifySlack repository branch imagename = do
+maybeNotifySlack channel repository branch imagename = do
   -- TODO Use env var instead.
   f <- doesFileExist "/slack-hook-url.txt"
   when f $ do
     putStrLn ("Notifying Slack for " ++ imagename ++ "...")
     hookUrl <- readFile "/slack-hook-url.txt"
-    let sn = slackNotification repository branch imagename
-    -- curl -s -X POST --data-urlencode payload@/tmp/payload.txt ${HOOK}
-    -- post hookUrl (toJSON sn)
+    let sn = slackNotification channel repository branch imagename
+    post hookUrl (toJSON sn)
     return ()
 
 ------------------------------------------------------------------------------
@@ -403,6 +407,7 @@ data BuildInput = BuildInput
   , inGrafts :: [GitUrl]
   , inDockerfile :: String
   , inCache :: Bool
+  , inChannel :: String
   }
   deriving Show
 
@@ -413,6 +418,7 @@ instance ToJSON BuildInput where
     , "grafts" .= map formatGitUrl inGrafts
     , "dockerfile" .= inDockerfile
     , "cache" .= inCache
+    , "channel" .= inChannel
     ]
 
 instance FromJSON BuildInput where
@@ -422,6 +428,7 @@ instance FromJSON BuildInput where
     mgrafts <- v.:? "grafts"
     mdockerfile <- v.:? "dockerfile"
     mcache <- v.:? "cache"
+    mchannel <- v.:? "channel"
 
     let mgitUrl = parseOnly gitUrlParser (BC.pack repository)
         mgitUrls = maybe [] (map (parseOnly gitUrlParser . BC.pack)) mgrafts
@@ -434,6 +441,7 @@ instance FromJSON BuildInput where
         , inGrafts = rights mgitUrls
         , inDockerfile = maybe "Dockerfile" id mdockerfile
         , inCache = maybe False id mcache
+        , inChannel = maybe "#general" id mchannel
         }
   parseJSON _ = mzero
 
@@ -480,8 +488,9 @@ instance ToJSON SlackField where
       ["value" .= sfValue] ++
       if sfShort then ["short" .= True] else []
 
-slackNotification repository branch imagename = SlackNotification
-  { snChannel = "@thu"
+-- `channel` can be e.g. "@thu" or "#general".
+slackNotification channel repository branch imagename = SlackNotification
+  { snChannel = channel
   , snUsername = "Zoidberg"
   , snIconEmoji = ":zoidberg:"
   , snText = "A new Docker image is available:"
