@@ -21,6 +21,7 @@ import Paths_reesd_builder (version)
 import Network.Wreq (defaults, param, post, postWith)
 import System.Console.CmdArgs.Explicit
 import System.Directory (copyFile, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive, renameFile)
+import System.Environment (lookupEnv)
 import System.FilePath (dropFileName, (</>), (<.>))
 import System.FilePath.Find
 import System.Process (rawSystem, readProcessWithExitCode)
@@ -347,14 +348,15 @@ maybePushImage imagename = do
     putStrLn err
 
 maybeNotifySlack channel repository branch imagename commit = do
-  -- TODO Use env var instead.
-  f <- doesFileExist "/slack-hook-url.txt"
-  when f $ do
-    putStrLn ("Notifying Slack for " ++ imagename ++ "...")
-    hookUrl <- readFile "/slack-hook-url.txt"
-    let sn = slackNotification channel repository branch imagename commit
-    post hookUrl (toJSON sn)
-    return ()
+  slackHookUrl <- lookupEnv "SLACK_HOOK_URL"
+  case slackHookUrl of
+    Nothing -> return ()
+    Just hookUrl -> do
+      putStrLn ("Notifying Slack for " ++ imagename ++ "...")
+      let sn = slackNotification channel repository branch imagename commit
+      -- TODO This can raise an exception if the URL is invalid.
+      post hookUrl (toJSON sn)
+      return ()
 
 ------------------------------------------------------------------------------
 data GitUrl = GitUrl
