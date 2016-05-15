@@ -3,9 +3,9 @@
 The `images.reesd.com/reesd/builder` Docker image is used to clone a GitHub
 repository and `docker build` the images found in it.
 
+
 ## Example usage
 
-The repository to build must contain an `Imagename` file per image to build.
 An example repository is https://github.com/hypered/reesd-hello.
 
 The builder needs:
@@ -18,16 +18,27 @@ The builder needs:
 
 - An optional `.dockercfg` file (when present, it is used to push the image).
 
+- An optional `SLACK_HOOK_URL` environment variable. Its content is a "Incoming
+  WebHooks" in Slack parlance and looks like
+
+```
+https://hooks.slack.com/services/xxxxxxxxx/xxxxxxxxx/xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+  When using a `SLACK_HOOK_URL`, a `--channel` option can be given.
+
 ```
 > docker run \
     -v /var/run/docker.sock:/var/run/docker.sock \
-    -v /path/to/github-deploy-ssh:/home/worker/.ssh \
-    -v /path/to/dockercfg:/home/worker/.dockercfg \
+    -v /path/to/github-deploy-ssh:/home/worker/ssh-keys:ro \
+    -v /path/to/dockercfg:/home/worker/.dockercfg:ro \
+    -e "SLACK_HOOK_URL=<see above>" \
     images.reesd.com/reesd/builder \
-      /home/worker/checkout-and-build.sh \
-      git@github.com:hypered/reesd-hello.git \
-      reesd-hello.git \
-      master
+    reesd-build build \
+    --repo git@github.com:hypered/reesd-hello \
+    --image images.reesd.com/reesd/hello \
+    --clone \
+    --channel "#reesd"
 ```
 
 
