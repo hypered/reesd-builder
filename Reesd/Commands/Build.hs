@@ -22,6 +22,7 @@ import Network.Wreq (defaults, param, post, postWith)
 import System.Console.CmdArgs.Explicit
 import System.Directory (copyFile, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive, renameFile)
 import System.Environment (lookupEnv)
+import System.Exit (ExitCode(..))
 import System.FilePath (dropFileName, (</>), (<.>))
 import System.FilePath.Find
 import System.Process (rawSystem, readProcessWithExitCode)
@@ -187,11 +188,18 @@ runCmd CmdInput{..} = do
 
 ------------------------------------------------------------------------------
 build channel clone gu grafts image dockerfile cache = do
-      when clone $ do
-        cloneOrUpdate gu
-        mapM_ cloneOrUpdate grafts
+      -- TODO Sanitize input, e.g. branch name.
+      let branch = gitUrlBranch gu
+          tag = if branch == "master" then "latest" else branch
+          imagename = if ':' `elem` image then image else image ++ ":" ++ tag
 
-      -- TODO Exit if clone/update failed.
+      when clone $ do
+        b <- cloneOrUpdate gu
+        bs <- mapM cloneOrUpdate grafts
+
+        when (any (== False) (b:bs)) $ do
+          maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename Nothing (Just "Can't clone repository.")
+          error "Can't clone repository."
 
       e <- doesDirectoryExist "/home/worker/checkout"
       when e (removeDirectoryRecursive "/home/worker/checkout")
@@ -203,20 +211,17 @@ build channel clone gu grafts image dockerfile cache = do
 
       mapM_ (checkout True) grafts
 
-      -- TODO Sanitize input, e.g. branch name.
-      let branch = gitUrlBranch gu
-          tag = if branch == "master" then "latest" else branch
-          imagename = if ':' `elem` image then image else image ++ ":" ++ tag
+      b <- buildDockerfile gu imagename dockerfile cache commit
+      when (not b) $ do
+        maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) (Just "Can't build Dockerfile.")
+        error "Can't build Dockerfile."
 
-      buildDockerfile gu imagename dockerfile cache commit
+      b <- maybePushImage imagename
+      when (not b) $ do
+        maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) (Just "Can't push image.")
+        error "Can't push image."
 
-      -- TODO Exit if build failed.
-
-      maybePushImage imagename
-
-      -- TODO Exit if push failed.
-
-      maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename commit
+      maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) Nothing
 
 
 -- | Clone a repository, or if it was already clone, update it.
@@ -239,7 +244,7 @@ cloneOrUpdate GitUrl{..} = do
       copyFile ("/home/worker/ssh-keys/known_hosts") "/home/worker/.ssh/known_hosts"
 
       e <- doesDirectoryExist ("/home/worker/gits" </> gitUrlRepository <.> "git")
-      if e
+      code <- if e
         then do
           -- Update when the repository has already been cloned.
           putStrLn ("/home/worker/gits" </> gitUrlRepository <.> "git" ++ " exists, fetching updates...")
@@ -250,6 +255,7 @@ cloneOrUpdate GitUrl{..} = do
             ""
           putStrLn out
           putStrLn err
+          return code
         else do
           -- Clone when it is new.
           putStrLn ("/home/worker/gits" </> gitUrlRepository <.> "git" ++ " doesn't exist, cloning...")
@@ -261,11 +267,16 @@ cloneOrUpdate GitUrl{..} = do
             ""
           putStrLn out
           putStrLn err
+          return code
 
       -- Restore original keys if any.
       when f (renameFile "/home/worker/.ssh/id_rsa.original" "/home/worker/.ssh/id_rsa")
       when f' (renameFile "/home/worker/.ssh/id_rsa.pub.original" "/home/worker/.ssh/id_rsa.pub")
       when f'' (renameFile "/home/worker/.ssh/known_hosts.original" "/home/worker/.ssh/known_hosts")
+
+      case code of
+        ExitSuccess -> return True
+        ExitFailure _ -> return False
 
 
 -- | Checkout a Git repository to /home/worker/checkout. If `graft` is True,
@@ -329,7 +340,9 @@ buildDockerfile GitUrl{..} imagename dockerfile cache commit = do
             ""
           putStrLn out
           putStrLn err
-          return True
+          case code of
+            ExitSuccess -> return True
+            ExitFailure _ -> return False
 
         else do
           putStrLn ("Can't find Dockerfile " ++ (dir_ </> dockerfile) ++ ".")
@@ -338,22 +351,27 @@ buildDockerfile GitUrl{..} imagename dockerfile cache commit = do
 -- | Possibly push an image if credentials are given in /home/worker/.dockercfg.
 maybePushImage imagename = do
   f <- doesFileExist "/home/worker/.dockercfg"
-  when f $ do
-    putStrLn ("Pushing image " ++ imagename ++ "...")
-    (code, out, err) <- readProcessWithExitCode "sudo"
-      [ "docker", "push", imagename
-      ]
-      ""
-    putStrLn out
-    putStrLn err
+  if f
+    then do
+      putStrLn ("Pushing image " ++ imagename ++ "...")
+      (code, out, err) <- readProcessWithExitCode "sudo"
+        [ "docker", "push", imagename
+        ]
+        ""
+      putStrLn out
+      putStrLn err
+      case code of
+        ExitSuccess -> return True
+        ExitFailure _ -> return False
+    else return True
 
-maybeNotifySlack channel repository branch imagename commit = do
+maybeNotifySlack channel repository branch imagename mcommit merror = do
   slackHookUrl <- lookupEnv "SLACK_HOOK_URL"
   case slackHookUrl of
     Nothing -> return ()
     Just hookUrl -> do
       putStrLn ("Notifying Slack for " ++ imagename ++ "...")
-      let sn = slackNotification channel repository branch imagename commit
+      let sn = slackNotification channel repository branch imagename mcommit merror
       -- TODO This can raise an exception if the URL is invalid.
       post hookUrl (toJSON sn)
       return ()
@@ -496,15 +514,22 @@ instance ToJSON SlackField where
       if sfShort then ["short" .= True] else []
 
 -- `channel` can be e.g. "@thu" or "#general".
-slackNotification channel repository branch imagename commit = SlackNotification
+slackNotification channel repository branch imagename mcommit merror = SlackNotification
   { snChannel = channel
   , snUsername = "Zoidberg"
   , snIconEmoji = ":zoidberg:"
   , snText = "A new Docker image is available:"
   , snAttachments =
     [ SlackAttachment
-      { saColor = "#7CF197"
+      { saColor = maybe "#7CF197" (const "#FF0000") merror
       , saFields =
+        (maybe [] (\err -> [ SlackField
+          { sfMaybeTitle = Just "Error"
+          , sfValue = err
+          , sfShort = False
+          }
+        ]) merror)
+        ++
         [ SlackField
           { sfMaybeTitle = Just "Repository"
           , sfValue = repository
@@ -515,12 +540,16 @@ slackNotification channel repository branch imagename commit = SlackNotification
           , sfValue = branch
           , sfShort = True
           }
-        , SlackField
+        ]
+        ++
+        (maybe [] (\commit -> [ SlackField
           { sfMaybeTitle = Just "Commit"
           , sfValue = commit
           , sfShort = False
           }
-        , SlackField
+        ]) mcommit)
+        ++
+        [ SlackField
           { sfMaybeTitle = Nothing
           , sfValue = ("```docker pull " ++ imagename ++ "```")
           , sfShort = False
