@@ -9,30 +9,26 @@ module Reesd.Commands.Build where
 -- TODO write artifacts file
 -- TODO Respect branch/tag names.
 
-import Control.Lens ((.~))
 import Control.Monad (mzero, when)
 import Data.Aeson
-  ( decode, encode, fromJSON, object, Value(Object), Result(..), FromJSON(..), ToJSON(..), (.:)
+  ( decode, encode, object, Value(Object), FromJSON(..), ToJSON(..), (.:)
   , (.=), (.:?) )
 import qualified Data.ByteString.Lazy as LB
 import Data.Either (isRight, rights)
 import Data.Version (showVersion)
 import Paths_reesd_builder (version)
-import Network.Wreq (defaults, param, post, postWith)
+import Network.Wreq (post)
 import System.Console.CmdArgs.Explicit
 import System.Directory (copyFile, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive, renameFile)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode(..))
 import System.FilePath (dropFileName, (</>), (<.>))
 import System.FilePath.Find
-import System.Process (rawSystem, readProcessWithExitCode)
+import System.Process (readProcessWithExitCode)
 
-import Control.Applicative ((<$>), (<|>), (<*>), (<*), (*>))
-import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
+import Control.Applicative ((<$>), (<*>), (<*), (*>))
 import qualified Data.ByteString.Char8 as BC
-import Data.Attoparsec.ByteString (Parser, many', parseOnly, (<?>))
-import qualified Data.Attoparsec.ByteString as A
+import Data.Attoparsec.ByteString (parseOnly, (<?>))
 import qualified Data.Attoparsec.ByteString.Char8 as C
 
 
@@ -45,7 +41,6 @@ versionString =
 
 ------------------------------------------------------------------------------
 -- | Process the command-line choice.
--- TODO Move the runCmd implementation in another module.
 processCmd :: Cmd -> IO ()
 processCmd Help = print (helpText [] HelpFormatDefault buildModes)
 
@@ -55,7 +50,32 @@ processCmd None = do
   processCmd Version
   processCmd Help
 
-processCmd cmd = runCmd cmd
+processCmd CmdClone{..} = do
+  let mgitUrl = parseOnly gitUrlParser (BC.pack cmdRepository)
+      mgitUrls = map (parseOnly gitUrlParser . BC.pack) cmdGrafts
+  case (mgitUrl, all isRight mgitUrls) of
+    (Left err, _) -> putStrLn err
+    (_, False) -> error "TODO"
+    (Right gu@GitUrl{..}, True) -> do
+      cloneOrUpdate gu
+      mapM_ cloneOrUpdate (rights mgitUrls)
+
+
+processCmd CmdBuild{..} = do
+  let mgitUrl = parseOnly gitUrlParser (BC.pack cmdRepository)
+      mgitUrls = map (parseOnly gitUrlParser . BC.pack) cmdGrafts
+  case (mgitUrl, all isRight mgitUrls) of
+    (Left err, _) -> putStrLn err
+    (_, False) -> error "TODO"
+    (Right gu@GitUrl{..}, True) ->
+      build cmdChannel cmdClone gu (rights mgitUrls) cmdImage cmdDockerfile cmdCache
+
+processCmd CmdInput{..} = do
+  content <- LB.readFile "/input.json"
+  case decode content of
+    Nothing -> putStrLn "Can't decode stdin input."
+    Just BuildInput{..} ->
+      build inChannel True inGitUrl inGrafts inImage inDockerfile inCache
 
 
 ------------------------------------------------------------------------------
@@ -155,35 +175,6 @@ buildBuildFlags =
       "CHANNEL"
       "Slack channel where to post (default to #general)."
   ]
-
-
-runCmd :: Cmd -> IO ()
-runCmd CmdClone{..} = do
-  let mgitUrl = parseOnly gitUrlParser (BC.pack cmdRepository)
-      mgitUrls = map (parseOnly gitUrlParser . BC.pack) cmdGrafts
-  case (mgitUrl, all isRight mgitUrls) of
-    (Left err, _) -> putStrLn err
-    (_, False) -> error "TODO"
-    (Right gu@GitUrl{..}, True) -> do
-      cloneOrUpdate gu
-      mapM_ cloneOrUpdate (rights mgitUrls)
-
-
-runCmd CmdBuild{..} = do
-  let mgitUrl = parseOnly gitUrlParser (BC.pack cmdRepository)
-      mgitUrls = map (parseOnly gitUrlParser . BC.pack) cmdGrafts
-  case (mgitUrl, all isRight mgitUrls) of
-    (Left err, _) -> putStrLn err
-    (_, False) -> error "TODO"
-    (Right gu@GitUrl{..}, True) ->
-      build cmdChannel cmdClone gu (rights mgitUrls) cmdImage cmdDockerfile cmdCache
-
-runCmd CmdInput{..} = do
-  content <- LB.readFile "/input.json"
-  case decode content of
-    Nothing -> putStrLn "Can't decode stdin input."
-    Just BuildInput{..} ->
-      build inChannel True inGitUrl inGrafts inImage inDockerfile inCache
 
 
 ------------------------------------------------------------------------------
