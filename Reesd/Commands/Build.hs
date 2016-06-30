@@ -5,7 +5,6 @@
 -- | cmdargs definitions for reesd-build.
 module Reesd.Commands.Build where
 
--- TODO docker push (done but check if it works).
 -- TODO write artifacts file
 -- TODO Respect branch/tag names.
 
@@ -179,40 +178,40 @@ buildBuildFlags =
 
 ------------------------------------------------------------------------------
 build channel clone gu grafts image dockerfile cache = do
-      -- TODO Sanitize input, e.g. branch name.
-      let branch = gitUrlBranch gu
-          tag = if branch == "master" then "latest" else branch
-          imagename = if ':' `elem` image then image else image ++ ":" ++ tag
+  -- TODO Sanitize input, e.g. branch name.
+  let branch = gitUrlBranch gu
+      tag = if branch == "master" then "latest" else branch
+      imagename = if ':' `elem` image then image else image ++ ":" ++ tag
 
-      when clone $ do
-        b <- cloneOrUpdate gu
-        bs <- mapM cloneOrUpdate grafts
+  when clone $ do
+    b <- cloneOrUpdate gu
+    bs <- mapM cloneOrUpdate grafts
 
-        when (any (== False) (b:bs)) $ do
-          maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename Nothing (Just "Can't clone repository.")
-          error "Can't clone repository."
+    when (any (== False) (b:bs)) $ do
+      maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename Nothing (Just "Can't clone repository.")
+      error "Can't clone repository."
 
-      e <- doesDirectoryExist "/home/worker/checkout"
-      when e (removeDirectoryRecursive "/home/worker/checkout")
+  e <- doesDirectoryExist "/home/worker/checkout"
+  when e (removeDirectoryRecursive "/home/worker/checkout")
 
-      commit <- checkout False gu
-      dockerfiles <- find always (fileName ==? "Dockerfile") "/home/worker/checkout"
-      putStrLn "Found Dockerfile:"
-      mapM_ (putStrLn . ("  " ++)) dockerfiles
+  commit <- checkout False gu
+  dockerfiles <- find always (fileName ==? "Dockerfile") "/home/worker/checkout"
+  putStrLn "Found Dockerfile:"
+  mapM_ (putStrLn . ("  " ++)) dockerfiles
 
-      mapM_ (checkout True) grafts
+  mapM_ (checkout True) grafts
 
-      b <- buildDockerfile gu imagename dockerfile cache commit
-      when (not b) $ do
-        maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) (Just "Can't build Dockerfile.")
-        error "Can't build Dockerfile."
+  b <- buildDockerfile gu imagename dockerfile cache commit
+  when (not b) $ do
+    maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) (Just "Can't build Dockerfile.")
+    error "Can't build Dockerfile."
 
-      b <- maybePushImage imagename
-      when (not b) $ do
-        maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) (Just "Can't push image.")
-        error "Can't push image."
+  b <- maybePushImage imagename
+  when (not b) $ do
+    maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) (Just "Can't push image.")
+    error "Can't push image."
 
-      maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) Nothing
+  maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) Nothing
 
 
 -- | Clone a repository, or if it was already clone, update it.
@@ -220,54 +219,54 @@ build channel clone gu grafts image dockerfile cache = do
 -- To clone from GitHub, SSH keys are expected to be found in
 -- /home/worker/ssh-keys/<repository-name>/id_rsa.
 cloneOrUpdate GitUrl{..} = do
-      putStrLn ("Cloning/updating GitHub repository " ++ gitUrlUsername ++ "/" ++ gitUrlRepository ++ "...")
+  putStrLn ("Cloning/updating GitHub repository " ++ gitUrlUsername ++ "/" ++ gitUrlRepository ++ "...")
 
-      -- Try to not overwrite existing keys.
-      -- TODO Use exception brackets.
-      f <- doesFileExist "/home/worker/.ssh/id_rsa"
-      f' <- doesFileExist "/home/worker/.ssh/id_rsa.pub"
-      f'' <- doesFileExist "/home/worker/.ssh/known_hosts"
-      when f (renameFile "/home/worker/.ssh/id_rsa" "/home/worker/.ssh/id_rsa.original")
-      when f' (renameFile "/home/worker/.ssh/id_rsa.pub" "/home/worker/.ssh/id_rsa.pub.original")
-      when f'' (renameFile "/home/worker/.ssh/known_hosts" "/home/worker/.ssh/known_hosts.original")
+  -- Try to not overwrite existing keys.
+  -- TODO Use exception brackets.
+  f <- doesFileExist "/home/worker/.ssh/id_rsa"
+  f' <- doesFileExist "/home/worker/.ssh/id_rsa.pub"
+  f'' <- doesFileExist "/home/worker/.ssh/known_hosts"
+  when f (renameFile "/home/worker/.ssh/id_rsa" "/home/worker/.ssh/id_rsa.original")
+  when f' (renameFile "/home/worker/.ssh/id_rsa.pub" "/home/worker/.ssh/id_rsa.pub.original")
+  when f'' (renameFile "/home/worker/.ssh/known_hosts" "/home/worker/.ssh/known_hosts.original")
 
-      copyFile ("/home/worker/ssh-keys" </> gitUrlRepository </> "id_rsa") "/home/worker/.ssh/id_rsa"
-      copyFile ("/home/worker/ssh-keys/known_hosts") "/home/worker/.ssh/known_hosts"
+  copyFile ("/home/worker/ssh-keys" </> gitUrlRepository </> "id_rsa") "/home/worker/.ssh/id_rsa"
+  copyFile ("/home/worker/ssh-keys/known_hosts") "/home/worker/.ssh/known_hosts"
 
-      e <- doesDirectoryExist ("/home/worker/gits" </> gitUrlRepository <.> "git")
-      code <- if e
-        then do
-          -- Update when the repository has already been cloned.
-          putStrLn ("/home/worker/gits" </> gitUrlRepository <.> "git" ++ " exists, fetching updates...")
-          (code, out, err) <- readProcessWithExitCode "git"
-            [ "--git-dir", "/home/worker/gits" </> gitUrlRepository <.> "git"
-            , "fetch", "-q", "--tags"
-            ]
-            ""
-          putStrLn out
-          putStrLn err
-          return code
-        else do
-          -- Clone when it is new.
-          putStrLn ("/home/worker/gits" </> gitUrlRepository <.> "git" ++ " doesn't exist, cloning...")
-          (code, out, err) <- readProcessWithExitCode "git"
-            [ "clone", "--mirror", "-q"
-            , "git@github.com:" ++ gitUrlUsername </> gitUrlRepository
-            , "/home/worker/gits" </> gitUrlRepository <.> "git"
-            ]
-            ""
-          putStrLn out
-          putStrLn err
-          return code
+  e <- doesDirectoryExist ("/home/worker/gits" </> gitUrlRepository <.> "git")
+  code <- if e
+    then do
+      -- Update when the repository has already been cloned.
+      putStrLn ("/home/worker/gits" </> gitUrlRepository <.> "git" ++ " exists, fetching updates...")
+      (code, out, err) <- readProcessWithExitCode "git"
+        [ "--git-dir", "/home/worker/gits" </> gitUrlRepository <.> "git"
+        , "fetch", "-q", "--tags"
+        ]
+        ""
+      putStrLn out
+      putStrLn err
+      return code
+    else do
+      -- Clone when it is new.
+      putStrLn ("/home/worker/gits" </> gitUrlRepository <.> "git" ++ " doesn't exist, cloning...")
+      (code, out, err) <- readProcessWithExitCode "git"
+        [ "clone", "--mirror", "-q"
+        , "git@github.com:" ++ gitUrlUsername </> gitUrlRepository
+        , "/home/worker/gits" </> gitUrlRepository <.> "git"
+        ]
+        ""
+      putStrLn out
+      putStrLn err
+      return code
 
-      -- Restore original keys if any.
-      when f (renameFile "/home/worker/.ssh/id_rsa.original" "/home/worker/.ssh/id_rsa")
-      when f' (renameFile "/home/worker/.ssh/id_rsa.pub.original" "/home/worker/.ssh/id_rsa.pub")
-      when f'' (renameFile "/home/worker/.ssh/known_hosts.original" "/home/worker/.ssh/known_hosts")
+  -- Restore original keys if any.
+  when f (renameFile "/home/worker/.ssh/id_rsa.original" "/home/worker/.ssh/id_rsa")
+  when f' (renameFile "/home/worker/.ssh/id_rsa.pub.original" "/home/worker/.ssh/id_rsa.pub")
+  when f'' (renameFile "/home/worker/.ssh/known_hosts.original" "/home/worker/.ssh/known_hosts")
 
-      case code of
-        ExitSuccess -> return True
-        ExitFailure _ -> return False
+  case code of
+    ExitSuccess -> return True
+    ExitFailure _ -> return False
 
 
 -- | Checkout a Git repository to /home/worker/checkout. If `graft` is True,
@@ -302,42 +301,42 @@ checkout graft GitUrl{..} = do
 -- | Run `docker build`. The Dockerfile path is given relative to
 -- /home/worker/checkout.
 buildDockerfile GitUrl{..} imagename dockerfile cache commit = do
-      let dir_ = "/home/worker/checkout"
+  let dir_ = "/home/worker/checkout"
 
-      -- TODO Test whether there is a Dockerfile.
-      f <- doesFileExist (dir_ </> dockerfile)
-      if f
-        then do
-          -- Write a BUILD-INFO file.
-          -- TODO Pretty-print the json.
-          LB.writeFile (dir_ </> dropFileName dockerfile </> "BUILD-INFO")
-            (encode BuildInfo
-              { biRepository = "git@github.com:" ++
-                  (gitUrlUsername </> gitUrlRepository) ++ ".git"
-              , biBranch = gitUrlBranch
-              , biCommit = commit
-              , biImage = imagename
-              })
-          appendFile (dir_ </> dockerfile) "ADD BUILD-INFO /"
+  -- TODO Test whether there is a Dockerfile.
+  f <- doesFileExist (dir_ </> dockerfile)
+  if f
+    then do
+      -- Write a BUILD-INFO file.
+      -- TODO Pretty-print the json.
+      LB.writeFile (dir_ </> dropFileName dockerfile </> "BUILD-INFO")
+        (encode BuildInfo
+          { biRepository = "git@github.com:" ++
+              (gitUrlUsername </> gitUrlRepository) ++ ".git"
+          , biBranch = gitUrlBranch
+          , biCommit = commit
+          , biImage = imagename
+          })
+      appendFile (dir_ </> dockerfile) "ADD BUILD-INFO /"
 
-          -- Run docker build.
-          (code, out, err) <- readProcessWithExitCode "sudo"
-            ([ "docker", "build", "--force-rm"
-            ] ++
-            (if cache then [] else ["--no-cache"]) ++
-            [ "-t", imagename
-            , dir_ </> dropFileName dockerfile
-            ])
-            ""
-          putStrLn out
-          putStrLn err
-          case code of
-            ExitSuccess -> return True
-            ExitFailure _ -> return False
+      -- Run docker build.
+      (code, out, err) <- readProcessWithExitCode "sudo"
+        ([ "docker", "build", "--force-rm"
+        ] ++
+        (if cache then [] else ["--no-cache"]) ++
+        [ "-t", imagename
+        , dir_ </> dropFileName dockerfile
+        ])
+        ""
+      putStrLn out
+      putStrLn err
+      case code of
+        ExitSuccess -> return True
+        ExitFailure _ -> return False
 
-        else do
-          putStrLn ("Can't find Dockerfile " ++ (dir_ </> dockerfile) ++ ".")
-          return False
+    else do
+      putStrLn ("Can't find Dockerfile " ++ (dir_ </> dockerfile) ++ ".")
+      return False
 
 -- | Possibly push an image if credentials are given in /home/worker/.dockercfg.
 maybePushImage imagename = do
