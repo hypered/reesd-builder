@@ -27,5 +27,6 @@ WORKDIR /home/worker
 RUN mkdir /home/worker/.ssh
 RUN mkdir /home/worker/gits
 RUN mkdir /home/worker/checkout
+RUN mkdir /home/worker/artifacts
 
 ADD dist/build/reesd-build/reesd-build /usr/bin/

@@ -183,6 +183,10 @@ build channel clone gu grafts image dockerfile cache = do
       tag = if branch == "master" then "latest" else branch
       imagename = if ':' `elem` image then image else image ++ ":" ++ tag
 
+  hasArtifactsDir <- doesDirectoryExist "/home/worker/artifacts"
+  when hasArtifactsDir $ do
+    LB.writeFile "/home/worker/artifacts/artifacts.json" (encode $ object ["tag" .= ("failure" :: String)])
+
   when clone $ do
     b <- cloneOrUpdate gu
     bs <- mapM cloneOrUpdate grafts
@@ -210,6 +214,9 @@ build channel clone gu grafts image dockerfile cache = do
   when (not b) $ do
     maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) (Just "Can't push image.")
     error "Can't push image."
+
+  when hasArtifactsDir $ do
+    LB.writeFile "/home/worker/artifacts/artifacts.json" (encode $ object ["tag" .= ("success" :: String)])
 
   maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) Nothing
 
@@ -300,23 +307,14 @@ checkout graft GitUrl{..} = do
 
 -- | Run `docker build`. The Dockerfile path is given relative to
 -- /home/worker/checkout.
-buildDockerfile GitUrl{..} imagename dockerfile cache commit = do
+buildDockerfile gu@GitUrl{..} imagename dockerfile cache commit = do
   let dir_ = "/home/worker/checkout"
 
   -- TODO Test whether there is a Dockerfile.
   f <- doesFileExist (dir_ </> dockerfile)
   if f
     then do
-      -- Write a BUILD-INFO file.
-      -- TODO Pretty-print the json.
-      LB.writeFile (dir_ </> dropFileName dockerfile </> "BUILD-INFO")
-        (encode BuildInfo
-          { biRepository = "git@github.com:" ++
-              (gitUrlUsername </> gitUrlRepository) ++ ".git"
-          , biBranch = gitUrlBranch
-          , biCommit = commit
-          , biImage = imagename
-          })
+      writeBuildInfo gu imagename dockerfile commit
       appendFile (dir_ </> dockerfile) "ADD BUILD-INFO /"
 
       -- Run docker build.
@@ -337,6 +335,18 @@ buildDockerfile GitUrl{..} imagename dockerfile cache commit = do
     else do
       putStrLn ("Can't find Dockerfile " ++ (dir_ </> dockerfile) ++ ".")
       return False
+
+-- TODO Pretty-print the json.
+writeBuildInfo GitUrl{..} imagename dockerfile commit = do
+  let dir_ = "/home/worker/checkout"
+  LB.writeFile (dir_ </> dropFileName dockerfile </> "BUILD-INFO")
+    (encode BuildInfo
+      { biRepository = "git@github.com:" ++
+          (gitUrlUsername </> gitUrlRepository) ++ ".git"
+      , biBranch = gitUrlBranch
+      , biCommit = commit
+      , biImage = imagename
+      })
 
 -- | Possibly push an image if credentials are given in /home/worker/.dockercfg.
 maybePushImage imagename = do
