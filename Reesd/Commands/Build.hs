@@ -25,9 +25,9 @@ import System.FilePath (dropFileName, (</>), (<.>))
 import System.FilePath.Find
 import System.Process (readProcessWithExitCode)
 
-import Control.Applicative ((<$>), (<*>), (<*), (*>))
+import Control.Applicative ((<$>), (<|>), (<*>), (<*), (*>))
 import qualified Data.ByteString.Char8 as BC
-import Data.Attoparsec.ByteString (parseOnly, (<?>))
+import Data.Attoparsec.ByteString (parseOnly, takeByteString, (<?>), Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as C
 
 
@@ -51,18 +51,18 @@ processCmd None = do
 
 processCmd CmdClone{..} = do
   let mgitUrl = parseOnly gitUrlParser (BC.pack cmdRepository)
-      mgitUrls = map (parseOnly gitUrlParser . BC.pack) cmdGrafts
+      mgitUrls = map (parseOnly graftParser . BC.pack) cmdGrafts
   case (mgitUrl, all isRight mgitUrls) of
     (Left err, _) -> putStrLn err
     (_, False) -> error "TODO"
     (Right gu@GitUrl{..}, True) -> do
       cloneOrUpdate gu
-      mapM_ cloneOrUpdate (rights mgitUrls)
+      mapM_ cloneOrUpdate (takeGitUrlGrafts (rights mgitUrls))
 
 
 processCmd CmdBuild{..} = do
   let mgitUrl = parseOnly gitUrlParser (BC.pack cmdRepository)
-      mgitUrls = map (parseOnly gitUrlParser . BC.pack) cmdGrafts
+      mgitUrls = map (parseOnly graftParser . BC.pack) cmdGrafts
   case (mgitUrl, all isRight mgitUrls) of
     (Left err, _) -> putStrLn err
     (_, False) -> error "TODO"
@@ -183,13 +183,16 @@ build channel clone gu grafts image dockerfile cache = do
       tag = if branch == "master" then "latest" else branch
       imagename = if ':' `elem` image then image else image ++ ":" ++ tag
 
+      ggrafts = takeGitUrlGrafts grafts
+      lgrafts = takeLocalGrafts grafts
+
   hasArtifactsDir <- doesDirectoryExist "/home/worker/artifacts"
   when hasArtifactsDir $ do
     LB.writeFile "/home/worker/artifacts/artifacts.json" (encode $ object ["tag" .= ("failure" :: String)])
 
   when clone $ do
     b <- cloneOrUpdate gu
-    bs <- mapM cloneOrUpdate grafts
+    bs <- mapM cloneOrUpdate ggrafts
 
     when (any (== False) (b:bs)) $ do
       maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename Nothing (Just "Can't clone repository.")
@@ -203,7 +206,8 @@ build channel clone gu grafts image dockerfile cache = do
   putStrLn "Found Dockerfile:"
   mapM_ (putStrLn . ("  " ++)) dockerfiles
 
-  mapM_ (checkout True) grafts
+  mapM_ (checkout True) ggrafts
+  mapM_ copyLocalGraft lgrafts
 
   b <- buildDockerfile gu imagename dockerfile cache commit
   when (not b) $ do
@@ -305,6 +309,17 @@ checkout graft GitUrl{..} = do
   putStrLn err
   return (head (words out)) -- TODO
 
+-- | Same as checkout but for local directories instead of repositories.
+copyLocalGraft :: FilePath -> IO ()
+copyLocalGraft p = do
+  let dir_ = "/home/worker/checkout"
+  (_, out, err) <- readProcessWithExitCode "cp"
+    [ "-r", p, dir_
+    ]
+    ""
+  putStrLn out
+  putStrLn err
+
 -- | Run `docker build`. The Dockerfile path is given relative to
 -- /home/worker/checkout.
 buildDockerfile gu@GitUrl{..} imagename dockerfile cache commit = do
@@ -319,7 +334,9 @@ buildDockerfile gu@GitUrl{..} imagename dockerfile cache commit = do
 
       -- Run docker build.
       (code, out, err) <- readProcessWithExitCode "sudo"
-        ([ "docker", "build", "--force-rm"
+        ([ "docker", "build"
+        , "-f", (dir_ </> dockerfile)
+        , "--force-rm"
         ] ++
         (if cache then [] else ["--no-cache"]) ++
         [ "-t", imagename
@@ -401,6 +418,38 @@ formatGitUrl GitUrl{..} =
 
 parseGitUrl = parseOnly gitUrlParser . BC.pack
 
+
+------------------------------------------------------------------------------
+data Graft =
+    GitUrlGraft GitUrl -- ^ The graft is provided by a GitHub repository.
+  | LocalGraft FilePath -- ^ The graft is provided by a local directory.
+  deriving Show
+
+localParser = do
+  c <- (C.char '/')
+  cs <- takeByteString
+  return (BC.unpack (c `BC.cons` cs))
+
+graftParser :: Parser Graft
+graftParser =
+  (GitUrlGraft <$> gitUrlParser)
+  <|> (LocalGraft <$> localParser)
+
+formatGraft (GitUrlGraft gu) = formatGitUrl gu
+formatGraft (LocalGraft p) = p
+
+parseGraft = parseOnly graftParser . BC.pack
+
+takeGitUrlGrafts :: [Graft] -> [GitUrl]
+takeGitUrlGrafts [] = []
+takeGitUrlGrafts (LocalGraft _:gs) = takeGitUrlGrafts gs
+takeGitUrlGrafts (GitUrlGraft g:gs) = g : takeGitUrlGrafts gs
+
+takeLocalGrafts :: [Graft] -> [FilePath]
+takeLocalGrafts [] = []
+takeLocalGrafts (LocalGraft p:gs) = p : takeLocalGrafts gs
+takeLocalGrafts (GitUrlGraft _:gs) = takeLocalGrafts gs
+
 ------------------------------------------------------------------------------
 data BuildInfo = BuildInfo
   { biRepository :: String
@@ -429,7 +478,7 @@ instance ToJSON BuildInfo where
 data BuildInput = BuildInput
   { inGitUrl :: GitUrl
   , inImage :: String
-  , inGrafts :: [GitUrl]
+  , inGrafts :: [Graft]
   , inDockerfile :: String
   , inCache :: Bool
   , inChannel :: String
@@ -440,7 +489,7 @@ instance ToJSON BuildInput where
   toJSON BuildInput{..} = object
     [ "repository" .= formatGitUrl inGitUrl
     , "image" .= inImage
-    , "grafts" .= map formatGitUrl inGrafts
+    , "grafts" .= map formatGraft inGrafts
     , "dockerfile" .= inDockerfile
     , "cache" .= inCache
     , "channel" .= inChannel
@@ -456,7 +505,7 @@ instance FromJSON BuildInput where
     mchannel <- v.:? "channel"
 
     let mgitUrl = parseOnly gitUrlParser (BC.pack repository)
-        mgitUrls = maybe [] (map (parseOnly gitUrlParser . BC.pack)) mgrafts
+        mgitUrls = maybe [] (map (parseOnly graftParser . BC.pack)) mgrafts
     case (mgitUrl, all isRight mgitUrls) of
       (Left err, _) -> mzero
       (_, False) -> mzero
