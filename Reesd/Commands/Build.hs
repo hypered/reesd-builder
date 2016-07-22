@@ -207,12 +207,12 @@ build channel clone gu grafts image dockerfile mangle cache = do
   e <- doesDirectoryExist "/home/worker/checkout"
   when e (removeDirectoryRecursive "/home/worker/checkout")
 
-  commit <- checkout False gu
+  commit <- checkout Nothing gu
   dockerfiles <- find always (fileName ==? "Dockerfile") "/home/worker/checkout"
   putStrLn "Found Dockerfile:"
   mapM_ (putStrLn . ("  " ++)) dockerfiles
 
-  mapM_ (checkout True) ggrafts
+  mapM_ (checkout (Just branch)) ggrafts
   mapM_ copyLocalGraft lgrafts
 
   b <- buildDockerfile gu imagename dockerfile mangle cache commit
@@ -286,20 +286,36 @@ cloneOrUpdate GitUrl{..} = do
     ExitFailure _ -> return False
 
 
--- | Checkout a Git repository to /home/worker/checkout. If `graft` is True,
+-- | Checkout a Git repository to /home/worker/checkout. If `graft` is Just,
 -- then create the checkout in a sub-directory. The goal is to have the main
 -- Dockerfile "see" the graft checkouts and include them in its build context.
-checkout :: Bool -> GitUrl -> IO String
-checkout graft GitUrl{..} = do
-  putStrLn ("Creating checkout...")
+-- The value within Just is used as a branch. If the branch doesn't exist, the
+-- GitUrl is used as-is.
+checkout :: Maybe String -> GitUrl -> IO String
+checkout mgraft GitUrl{..} = do
   let dir_ = "/home/worker/checkout"
-      dir = if graft then (dir_ </> gitUrlRepository) else  dir_
+      dir = if mgraft /= Nothing then (dir_ </> gitUrlRepository) else  dir_
   -- The work-tree directory must exist before calling `git checkout`.
   createDirectoryIfMissing False dir
+
+  br <- case mgraft of
+    Nothing -> return gitUrlBranch
+    Just branch -> do
+      (code, out, err) <- readProcessWithExitCode "git"
+        [ "--git-dir", "/home/worker/gits" </> gitUrlRepository <.> "git"
+        , "--work-tree", dir
+        , "rev-parse", "--verify", branch
+        ]
+        ""
+      case code of
+        ExitSuccess -> return branch
+        _ -> return gitUrlBranch
+
+  putStrLn ("Creating checkout of branch " ++ br ++ "...")
   (code, out, err) <- readProcessWithExitCode "git"
     [ "--git-dir", "/home/worker/gits" </> gitUrlRepository <.> "git"
     , "--work-tree", dir
-    , "checkout", gitUrlBranch, "--", "."
+    , "checkout", br, "--", "."
     ]
     ""
   putStrLn out
