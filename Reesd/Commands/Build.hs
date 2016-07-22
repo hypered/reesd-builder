@@ -67,14 +67,14 @@ processCmd CmdBuild{..} = do
     (Left err, _) -> putStrLn err
     (_, False) -> error "TODO"
     (Right gu@GitUrl{..}, True) ->
-      build cmdChannel cmdClone gu (rights mgitUrls) cmdImage cmdDockerfile cmdCache
+      build cmdChannel cmdClone gu (rights mgitUrls) cmdImage cmdDockerfile cmdMangleFrom cmdCache
 
 processCmd CmdInput{..} = do
   content <- LB.readFile "/input.json"
   case decode content of
     Nothing -> putStrLn "Can't decode stdin input."
     Just BuildInput{..} ->
-      build inChannel True inGitUrl inGrafts inImage inDockerfile inCache
+      build inChannel True inGitUrl inGrafts inImage inDockerfile inMangleFrom {- TODO -} inCache
 
 
 ------------------------------------------------------------------------------
@@ -89,6 +89,7 @@ data Cmd =
     , cmdGrafts :: [String]
     , cmdImage :: String
     , cmdDockerfile :: String
+    , cmdMangleFrom :: Maybe String
     , cmdClone :: Bool
     , cmdCache :: Bool
     , cmdChannel :: String
@@ -136,6 +137,7 @@ buildBuild = CmdBuild
   , cmdGrafts = []
   , cmdImage = ""
   , cmdDockerfile = "Dockerfile"
+  , cmdMangleFrom = Nothing
   , cmdClone = False
   , cmdCache = False
   , cmdChannel = "#general"
@@ -163,6 +165,10 @@ buildBuildFlags =
       (\x r -> Right (r { cmdDockerfile = x }))
       "DOCKERFILE"
       "Path to the Dockerfile to build."
+  , flagReq ["mangle-from"]
+      (\x r -> Right (r { cmdMangleFrom = Just x }))
+      "TAG"
+      "Alter the FROM Dockerfile instruction by adding the given tag."
   , flagBool ["clone"]
       (\x r -> r { cmdClone = x })
       "Clone repositories (don't assume they already exist)."
@@ -177,7 +183,7 @@ buildBuildFlags =
 
 
 ------------------------------------------------------------------------------
-build channel clone gu grafts image dockerfile cache = do
+build channel clone gu grafts image dockerfile mangle cache = do
   -- TODO Sanitize input, e.g. branch name.
   let branch = gitUrlBranch gu
       tag = if branch == "master" then "latest" else branch
@@ -209,7 +215,7 @@ build channel clone gu grafts image dockerfile cache = do
   mapM_ (checkout True) ggrafts
   mapM_ copyLocalGraft lgrafts
 
-  b <- buildDockerfile gu imagename dockerfile cache commit
+  b <- buildDockerfile gu imagename dockerfile mangle cache commit
   when (not b) $ do
     maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) (Just "Can't build Dockerfile.")
     error "Can't build Dockerfile."
@@ -322,7 +328,7 @@ copyLocalGraft p = do
 
 -- | Run `docker build`. The Dockerfile path is given relative to
 -- /home/worker/checkout.
-buildDockerfile gu@GitUrl{..} imagename dockerfile cache commit = do
+buildDockerfile gu@GitUrl{..} imagename dockerfile mangle cache commit = do
   let dir_ = "/home/worker/checkout"
 
   -- TODO Test whether there is a Dockerfile.
@@ -331,6 +337,7 @@ buildDockerfile gu@GitUrl{..} imagename dockerfile cache commit = do
     then do
       writeBuildInfo gu imagename dockerfile commit
       appendFile (dir_ </> dockerfile) "ADD BUILD-INFO /"
+      _ <- maybe (return True) (mangleDockerfile (dir_ </> dockerfile)) mangle -- TODO test return value
 
       -- Run docker build.
       (code, out, err) <- readProcessWithExitCode "sudo"
@@ -365,6 +372,21 @@ writeBuildInfo GitUrl{..} imagename dockerfile commit = do
       , biImage = imagename
       })
 
+-- | Modify the FROM instruction to specify a given tag.
+mangleDockerfile path tag = do
+  content <- BC.readFile path
+  case parseOnly dockerfileParser content of
+    Left err -> putStrLn ("Can't parse Dockerfile " ++ path) >> return False
+    Right ints -> do
+      let ints' = map mangleFrom ints
+          content' = formatDockerfile ints'
+      BC.writeFile (path ++ ".mangle") content'
+      renameFile (path ++ ".mangle") path
+      return True
+
+  where mangleFrom (FromInstruction n _) = FromInstruction n (Just tag)
+        mangleFrom int = int
+
 -- | Possibly push an image if credentials are given in /home/worker/.dockercfg.
 maybePushImage imagename = do
   f <- doesFileExist "/home/worker/.dockercfg"
@@ -392,6 +414,35 @@ maybeNotifySlack channel repository branch imagename mcommit merror = do
       -- TODO This can raise an exception if the URL is invalid.
       post hookUrl (toJSON sn)
       return ()
+
+
+------------------------------------------------------------------------------
+-- | Dockerfile instructions
+data Instruction =
+    FromInstruction String (Maybe String) -- ^ Image name + optional tag.
+  | Other String -- ^ A line as-is.
+  deriving Show
+
+fromParser = FromInstruction
+  <$> ((C.string "from " <|> C.string "FROM ")
+  *> (BC.unpack <$> C.takeWhile1 (C.inClass "-a-zA-Z0-9_./" )))
+  <*> (C.option Nothing
+    (C.char ':' *> ((Just . BC.unpack) <$> C.takeWhile1 (C.inClass "-a-zA-Z0-9_." ))))
+  <* C.char '\n'
+
+otherParser = Other
+  <$> (BC.unpack <$> C.takeTill (== '\n'))
+  <* C.char '\n'
+
+dockerfileParser :: Parser [Instruction]
+dockerfileParser = C.many' (fromParser <|> otherParser)
+
+formatDockerfile :: [Instruction] -> BC.ByteString
+formatDockerfile ints =
+  let ints' = map f ints
+  in BC.unlines ints'
+  where f (FromInstruction n t) = BC.unwords (["FROM", BC.pack (n ++ maybe "" (":" ++) t)])
+        f (Other s) = BC.pack s
 
 ------------------------------------------------------------------------------
 data GitUrl = GitUrl
@@ -477,30 +528,36 @@ instance ToJSON BuildInfo where
 -- }
 data BuildInput = BuildInput
   { inGitUrl :: GitUrl
+  , inBranch :: String -- TODO This overrides the branch in inGitUrl, maybe a GitUrl variant without the branch would be better.
   , inImage :: String
   , inGrafts :: [Graft]
   , inDockerfile :: String
+  , inMangleFrom :: Maybe String
   , inCache :: Bool
   , inChannel :: String
   }
   deriving Show
 
 instance ToJSON BuildInput where
-  toJSON BuildInput{..} = object
+  toJSON BuildInput{..} = object $
     [ "repository" .= formatGitUrl inGitUrl
+    , "branch" .= gitUrlBranch inGitUrl
     , "image" .= inImage
     , "grafts" .= map formatGraft inGrafts
     , "dockerfile" .= inDockerfile
     , "cache" .= inCache
     , "channel" .= inChannel
-    ]
+    ] ++
+    (maybe [] ((:[]) . ("mangle-from" .=)) inMangleFrom)
 
 instance FromJSON BuildInput where
   parseJSON (Object v) = do
     repository <- v .: "repository"
+    mbranch <- v .:? "branch"
     image <- v .: "image"
     mgrafts <- v.:? "grafts"
     mdockerfile <- v.:? "dockerfile"
+    mmangle <- v.:? "mangle-from"
     mcache <- v.:? "cache"
     mchannel <- v.:? "channel"
 
@@ -510,10 +567,12 @@ instance FromJSON BuildInput where
       (Left err, _) -> mzero
       (_, False) -> mzero
       (Right gu, True) -> return BuildInput
-        { inGitUrl = gu
+        { inGitUrl = maybe gu (\b -> gu { gitUrlBranch = b }) mbranch
+        , inBranch = maybe (gitUrlBranch gu) id mbranch
         , inImage = image
         , inGrafts = rights mgitUrls
         , inDockerfile = maybe "Dockerfile" id mdockerfile
+        , inMangleFrom = mmangle
         , inCache = maybe False id mcache
         , inChannel = maybe "#general" id mchannel
         }
