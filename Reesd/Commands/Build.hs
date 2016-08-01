@@ -546,6 +546,7 @@ instance ToJSON BuildInfo where
 data BuildInput = BuildInput
   { inGitUrl :: GitUrl
   , inBranch :: String -- TODO This overrides the branch in inGitUrl, maybe a GitUrl variant without the branch would be better.
+  , inTouchedFiles :: [String] -- ^ Added, removed, or modified files in any commit from a Push event. Actually, this is only needed in Reesd, probably the inBranch too.
   , inImage :: String
   , inGrafts :: [Graft]
   , inDockerfile :: String
@@ -559,6 +560,7 @@ instance ToJSON BuildInput where
   toJSON BuildInput{..} = object $
     [ "repository" .= formatGitUrl inGitUrl
     , "branch" .= gitUrlBranch inGitUrl
+    , "touched-files" .= inTouchedFiles
     , "image" .= inImage
     , "grafts" .= map formatGraft inGrafts
     , "dockerfile" .= inDockerfile
@@ -572,6 +574,7 @@ instance FromJSON BuildInput where
     repository <- v .: "repository"
     mbranch <- v .:? "branch"
     image <- v .: "image"
+    mtouched <- v .:? "touched-files"
     mgrafts <- v.:? "grafts"
     mdockerfile <- v.:? "dockerfile"
     mmangle <- v.:? "mangle-from"
@@ -587,6 +590,7 @@ instance FromJSON BuildInput where
         { inGitUrl = maybe gu (\b -> gu { gitUrlBranch = b }) mbranch
         , inBranch = maybe (gitUrlBranch gu) id mbranch
         , inImage = image
+        , inTouchedFiles = maybe [] id mtouched
         , inGrafts = rights mgitUrls
         , inDockerfile = maybe "Dockerfile" id mdockerfile
         , inMangleFrom = mmangle
