@@ -352,8 +352,8 @@ buildDockerfile gu@GitUrl{..} imagename dockerfile mangle cache commit = do
   if f
     then do
       writeBuildInfo gu imagename dockerfile commit
-      appendFile (dir_ </> dockerfile) "ADD BUILD-INFO /"
       _ <- maybe (return True) (mangleDockerfile (dir_ </> dockerfile)) mangle -- TODO test return value
+      appendFile (dir_ </> dockerfile) "ADD BUILD-INFO /"
 
       -- Run docker build.
       (code, out, err) <- readProcessWithExitCode "sudo"
