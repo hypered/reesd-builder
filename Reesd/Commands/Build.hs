@@ -207,28 +207,33 @@ build channel clone gu grafts image dockerfile mangle cache = do
   e <- doesDirectoryExist "/home/worker/checkout"
   when e (removeDirectoryRecursive "/home/worker/checkout")
 
-  commit <- checkout Nothing gu
-  dockerfiles <- find always (fileName ==? "Dockerfile") "/home/worker/checkout"
-  putStrLn "Found Dockerfile:"
-  mapM_ (putStrLn . ("  " ++)) dockerfiles
+  mcommit <- checkout Nothing gu
+  case mcommit of
+    Nothing -> do
+      maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename Nothing (Just "Can't checkout branch.")
+      error "Can't checkout branch."
+    Just commit -> do
+      dockerfiles <- find always (fileName ==? "Dockerfile") "/home/worker/checkout"
+      putStrLn "Found Dockerfile:"
+      mapM_ (putStrLn . ("  " ++)) dockerfiles
 
-  mapM_ (checkout (Just branch)) ggrafts
-  mapM_ copyLocalGraft lgrafts
+      mapM_ (checkout (Just branch)) ggrafts
+      mapM_ copyLocalGraft lgrafts
 
-  b <- buildDockerfile gu imagename dockerfile mangle cache commit
-  when (not b) $ do
-    maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) (Just "Can't build Dockerfile.")
-    error "Can't build Dockerfile."
+      b <- buildDockerfile gu imagename dockerfile mangle cache commit
+      when (not b) $ do
+        maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) (Just "Can't build Dockerfile.")
+        error "Can't build Dockerfile."
 
-  b <- maybePushImage imagename
-  when (not b) $ do
-    maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) (Just "Can't push image.")
-    error "Can't push image."
+      b <- maybePushImage imagename
+      when (not b) $ do
+        maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) (Just "Can't push image.")
+        error "Can't push image."
 
-  when hasArtifactsDir $ do
-    LB.writeFile "/home/worker/artifacts/artifacts.json" (encode $ object ["tag" .= ("success" :: String)])
+      when hasArtifactsDir $ do
+        LB.writeFile "/home/worker/artifacts/artifacts.json" (encode $ object ["tag" .= ("success" :: String)])
 
-  maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) Nothing
+      maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) Nothing
 
 
 -- | Clone a repository, or if it was already clone, update it.
@@ -291,7 +296,7 @@ cloneOrUpdate GitUrl{..} = do
 -- Dockerfile "see" the graft checkouts and include them in its build context.
 -- The value within Just is used as a branch. If the branch doesn't exist, the
 -- GitUrl is used as-is.
-checkout :: Maybe String -> GitUrl -> IO String
+checkout :: Maybe String -> GitUrl -> IO (Maybe String)
 checkout mgraft GitUrl{..} = do
   let dir_ = "/home/worker/checkout"
       dir = if mgraft /= Nothing then (dir_ </> gitUrlRepository) else  dir_
@@ -324,12 +329,15 @@ checkout mgraft GitUrl{..} = do
   putStrLn ("Reading branch SHA1...")
   (code, out, err) <- readProcessWithExitCode "git"
     [ "--git-dir", "/home/worker/gits" </> gitUrlRepository <.> "git"
-    , "rev-parse", gitUrlBranch
+    , "rev-parse", "--verify", br
     ]
     ""
   putStrLn out
   putStrLn err
-  return (head (words out)) -- TODO
+
+  case code of
+    ExitSuccess -> return (Just (head (words out))) -- TODO
+    _ -> return Nothing
 
 -- | Same as checkout but for local directories instead of repositories.
 copyLocalGraft :: FilePath -> IO ()
@@ -400,7 +408,7 @@ mangleDockerfile path tag = do
       renameFile (path ++ ".mangle") path
       return True
 
-  where mangleFrom (FromInstruction n _) = FromInstruction n (Just tag')
+  where mangleFrom (FromInstruction (ImageName n _)) = FromInstruction (ImageName n (Just tag'))
         mangleFrom int = int
         tag' = if tag == "master" then "latest" else tag
 
@@ -436,15 +444,13 @@ maybeNotifySlack channel repository branch imagename mcommit merror = do
 ------------------------------------------------------------------------------
 -- | Dockerfile instructions
 data Instruction =
-    FromInstruction String (Maybe String) -- ^ Image name + optional tag.
+    FromInstruction ImageName
   | Other String -- ^ A line as-is.
   deriving Show
 
 fromParser = FromInstruction
   <$> ((C.string "from " <|> C.string "FROM ")
-  *> (BC.unpack <$> C.takeWhile1 (C.inClass "-a-zA-Z0-9_./" )))
-  <*> (C.option Nothing
-    (C.char ':' *> ((Just . BC.unpack) <$> C.takeWhile1 (C.inClass "-a-zA-Z0-9_." ))))
+  *> imagenameParser)
   <* C.char '\n'
 
 otherParser = Other
@@ -458,8 +464,22 @@ formatDockerfile :: [Instruction] -> BC.ByteString
 formatDockerfile ints =
   let ints' = map f ints
   in BC.unlines ints'
-  where f (FromInstruction n t) = BC.unwords (["FROM", BC.pack (n ++ maybe "" (":" ++) t)])
+  where f (FromInstruction (ImageName n t)) = BC.unwords (["FROM", BC.pack (n ++ maybe "" (":" ++) t)])
         f (Other s) = BC.pack s
+
+
+------------------------------------------------------------------------------
+data ImageName = ImageName String (Maybe String) -- ^ Image name + optional tag.
+  deriving Show
+
+imagenameParser = ImageName
+  <$> (BC.unpack <$> C.takeWhile1 (C.inClass "-a-zA-Z0-9_./" ))
+  <*> (C.option Nothing
+    (C.char ':' *> ((Just . BC.unpack) <$> C.takeWhile1 (C.inClass "-a-zA-Z0-9_." ))))
+
+formatImageName :: ImageName -> BC.ByteString
+formatImageName (ImageName n t) = BC.pack (n ++ maybe "" (":" ++) t)
+
 
 ------------------------------------------------------------------------------
 data GitUrl = GitUrl
