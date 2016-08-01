@@ -400,8 +400,9 @@ mangleDockerfile path tag = do
       renameFile (path ++ ".mangle") path
       return True
 
-  where mangleFrom (FromInstruction n _) = FromInstruction n (Just tag)
+  where mangleFrom (FromInstruction n _) = FromInstruction n (Just tag')
         mangleFrom int = int
+        tag' = if tag == "master" then "latest" else tag
 
 -- | Possibly push an image if credentials are given in /home/worker/.dockercfg.
 maybePushImage imagename = do
