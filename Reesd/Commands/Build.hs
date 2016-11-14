@@ -22,10 +22,9 @@ import System.Directory (copyFile, createDirectoryIfMissing, doesDirectoryExist,
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode(..))
 import System.FilePath (dropFileName, (</>), (<.>))
-import System.FilePath.Find
-import System.Process (readProcessWithExitCode)
+import System.Process (createProcess, proc, readProcessWithExitCode, waitForProcess, CreateProcess(..), StdStream(..))
 
-import Control.Applicative ((<$>), (<|>), (<*>), (<*), (*>))
+import Control.Applicative (pure, (<$>), (<|>), (<*>), (<*), (*>))
 import qualified Data.ByteString.Char8 as BC
 import Data.Attoparsec.ByteString (parseOnly, takeByteString, (<?>), Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as C
@@ -58,6 +57,11 @@ processCmd CmdClone{..} = do
     (Right gu@GitUrl{..}, True) -> do
       cloneOrUpdate gu
       mapM_ cloneOrUpdate (takeGitUrlGrafts (rights mgitUrls))
+      if cmdCheckout
+        then do
+          _ <- checkout (Just gitUrlBranch) gu -- Force a graft by using Just.
+          return ()
+        else return ()
 
 
 processCmd CmdBuild{..} = do
@@ -67,14 +71,14 @@ processCmd CmdBuild{..} = do
     (Left err, _) -> putStrLn err
     (_, False) -> error "TODO"
     (Right gu@GitUrl{..}, True) ->
-      build cmdChannel cmdClone gu (rights mgitUrls) cmdImage cmdDockerfile cmdMangleFrom cmdCache
+      build cmdChannel cmdClone gu (rights mgitUrls) cmdImage cmdDockerfile cmdMangleFrom cmdCache cmdRootFs
 
 processCmd CmdInput{..} = do
   content <- LB.readFile "/input.json"
   case decode content of
     Nothing -> putStrLn "Can't decode stdin input."
     Just BuildInput{..} ->
-      build inChannel True inGitUrl inGrafts inImage inDockerfile inMangleFrom {- TODO -} inCache
+      build inChannel True inGitUrl inGrafts inImage inDockerfile inMangleFrom {- TODO -} inCache inRootFs
 
 
 ------------------------------------------------------------------------------
@@ -83,6 +87,7 @@ data Cmd =
     CmdClone
     { cmdRepository :: String
     , cmdGrafts :: [String]
+    , cmdCheckout :: Bool
     }
   | CmdBuild
     { cmdRepository :: String
@@ -90,6 +95,7 @@ data Cmd =
     , cmdImage :: String
     , cmdDockerfile :: String
     , cmdMangleFrom :: Maybe String
+    , cmdRootFs :: Maybe String
     , cmdClone :: Bool
     , cmdCache :: Bool
     , cmdChannel :: String
@@ -115,7 +121,7 @@ buildModes = (modes "reesd-build" None "Build Dockerfiles."
 buildCloneMode :: Mode Cmd
 buildCloneMode = mode' "clone" buildClone
   "Clone a Git repository."
-  buildCommonFlags
+  (buildCommonFlags ++ buildCloneFlags)
 
 buildBuildMode :: Mode Cmd
 buildBuildMode = mode' "build" buildBuild
@@ -130,6 +136,7 @@ buildInputMode = mode' "input" buildInput
 buildClone = CmdClone
   { cmdRepository = ""
   , cmdGrafts = []
+  , cmdCheckout = False
   }
 
 buildBuild = CmdBuild
@@ -138,6 +145,7 @@ buildBuild = CmdBuild
   , cmdImage = ""
   , cmdDockerfile = "Dockerfile"
   , cmdMangleFrom = Nothing
+  , cmdRootFs = Nothing
   , cmdClone = False
   , cmdCache = False
   , cmdChannel = "#general"
@@ -169,6 +177,10 @@ buildBuildFlags =
       (\x r -> Right (r { cmdMangleFrom = Just x }))
       "TAG"
       "Alter the FROM Dockerfile instruction by adding the given tag."
+  , flagReq ["rootfs"]
+      (\x r -> Right (r { cmdRootFs = Just x }))
+      "PATH"
+      "Build an image using a rootfs instea of a Dockerfile."
   , flagBool ["clone"]
       (\x r -> r { cmdClone = x })
       "Clone repositories (don't assume they already exist)."
@@ -181,9 +193,15 @@ buildBuildFlags =
       "Slack channel where to post (default to #general)."
   ]
 
+buildCloneFlags =
+  [ flagBool ["checkout"]
+      (\x r -> r { cmdCheckout = x })
+      "Create a checkout after cloning."
+  ]
+
 
 ------------------------------------------------------------------------------
-build channel clone gu grafts image dockerfile mangle cache = do
+build channel clone gu grafts image dockerfile mangle cache mrootfs = do
   -- TODO Sanitize input, e.g. branch name.
   let branch = gitUrlBranch gu
       tag = if branch == "master" then "latest" else branch
@@ -201,7 +219,7 @@ build channel clone gu grafts image dockerfile mangle cache = do
     bs <- mapM cloneOrUpdate ggrafts
 
     when (any (== False) (b:bs)) $ do
-      maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename Nothing (Just "Can't clone repository.")
+      maybeNotifySlack channel gu imagename Nothing (Just "Can't clone repository.")
       error "Can't clone repository."
 
   e <- doesDirectoryExist "/home/worker/checkout"
@@ -210,38 +228,46 @@ build channel clone gu grafts image dockerfile mangle cache = do
   mcommit <- checkout Nothing gu
   case mcommit of
     Nothing -> do
-      maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename Nothing (Just "Can't checkout branch.")
+      maybeNotifySlack channel gu imagename Nothing (Just "Can't checkout branch.")
       error "Can't checkout branch."
     Just commit -> do
-      dockerfiles <- find always (fileName ==? "Dockerfile") "/home/worker/checkout"
-      putStrLn "Found Dockerfile:"
-      mapM_ (putStrLn . ("  " ++)) dockerfiles
-
       mapM_ (checkout (Just branch)) ggrafts
       mapM_ copyLocalGraft lgrafts
 
-      b <- buildDockerfile gu imagename dockerfile mangle cache commit
-      when (not b) $ do
-        maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) (Just "Can't build Dockerfile.")
-        error "Can't build Dockerfile."
+      case mrootfs of
+        Nothing -> do
+          b <- buildDockerfile gu imagename dockerfile mangle cache commit
+          when (not b) $ do
+            maybeNotifySlack channel gu imagename (Just commit) (Just "Can't build Dockerfile.")
+            error "Can't build Dockerfile."
+        Just rootfs -> do
+          mapM_ (copyLocalGraftRootFs rootfs) lgrafts
+          b <- buildRootFs gu imagename rootfs commit
+          when (not b) $ do
+            maybeNotifySlack channel gu imagename (Just commit) (Just "Can't build rootfs.")
+            error "Can't build rootfs."
 
       b <- maybePushImage imagename
       when (not b) $ do
-        maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) (Just "Can't push image.")
+        maybeNotifySlack channel gu imagename (Just commit) (Just "Can't push image.")
         error "Can't push image."
 
       when hasArtifactsDir $ do
         LB.writeFile "/home/worker/artifacts/artifacts.json" (encode $ object ["tag" .= ("success" :: String)])
 
-      maybeNotifySlack channel (gitUrlRepository gu) (gitUrlBranch gu) imagename (Just commit) Nothing
+      maybeNotifySlack channel gu imagename (Just commit) Nothing
 
 
 -- | Clone a repository, or if it was already clone, update it.
 -- The clone is in /home/worker/gits/<repository-name>.
 -- To clone from GitHub, SSH keys are expected to be found in
 -- /home/worker/ssh-keys/<repository-name>/id_rsa.
-cloneOrUpdate GitUrl{..} = do
-  putStrLn ("Cloning/updating GitHub repository " ++ gitUrlUsername ++ "/" ++ gitUrlRepository ++ "...")
+cloneOrUpdate gu@GitUrl{..} = do
+  let service = case gitHostingService of
+        Bitbucket -> "Bitbucket"
+        GitHub -> "GitHub"
+  putStrLn ("Cloning/updating " ++ service ++ " repository " ++ gitUrlUsername
+    ++ "/" ++ gitUrlRepository ++ "...")
 
   -- Try to not overwrite existing keys.
   -- TODO Use exception brackets.
@@ -273,7 +299,7 @@ cloneOrUpdate GitUrl{..} = do
       putStrLn ("/home/worker/gits" </> gitUrlRepository <.> "git" ++ " doesn't exist, cloning...")
       (code, out, err) <- readProcessWithExitCode "git"
         [ "clone", "--mirror", "-q"
-        , "git@github.com:" ++ gitUrlUsername </> gitUrlRepository
+        , gitService gu ++ gitUrlUsername </> gitUrlRepository
         , "/home/worker/gits" </> gitUrlRepository <.> "git"
         ]
         ""
@@ -316,7 +342,7 @@ checkout mgraft GitUrl{..} = do
         ExitSuccess -> return branch
         _ -> return gitUrlBranch
 
-  putStrLn ("Creating checkout of branch " ++ br ++ "...")
+  putStrLn ("Creating checkout of branch " ++ gitUrlUsername ++ "/" ++ gitUrlRepository ++ "#" ++ br ++ "...")
   (code, out, err) <- readProcessWithExitCode "git"
     [ "--git-dir", "/home/worker/gits" </> gitUrlRepository <.> "git"
     , "--work-tree", dir
@@ -359,7 +385,8 @@ buildDockerfile gu@GitUrl{..} imagename dockerfile mangle cache commit = do
   f <- doesFileExist (dir_ </> dockerfile)
   if f
     then do
-      writeBuildInfo gu imagename dockerfile commit
+      let dockerdir = dropFileName dockerfile
+      writeBuildInfo gu imagename dockerdir commit
       _ <- maybe (return True) (mangleDockerfile (dir_ </> dockerfile)) mangle -- TODO test return value
       appendFile (dir_ </> dockerfile) "ADD BUILD-INFO /"
 
@@ -384,12 +411,47 @@ buildDockerfile gu@GitUrl{..} imagename dockerfile mangle cache commit = do
       putStrLn ("Can't find Dockerfile " ++ (dir_ </> dockerfile) ++ ".")
       return False
 
--- TODO Pretty-print the json.
-writeBuildInfo GitUrl{..} imagename dockerfile commit = do
+buildRootFs gu@GitUrl{..} imagename path commit = do
   let dir_ = "/home/worker/checkout"
-  LB.writeFile (dir_ </> dropFileName dockerfile </> "BUILD-INFO")
+
+  f <- doesDirectoryExist (dir_ </> path)
+  if f
+    then do
+      writeBuildInfo gu imagename path commit
+
+      (_, Just hout, _, h) <- createProcess (proc "tar"
+        ["-czf", "-", "-C", dir_ </> path, "."])
+        { std_out = CreatePipe }
+      (_, _, _, h') <- createProcess (proc "sudo"
+        ["docker", "import", "-", imagename])
+        { std_in = UseHandle hout }
+      code <- waitForProcess h
+      code' <- waitForProcess h'
+      case (code, code') of
+        (ExitSuccess, ExitSuccess) -> return True
+        _ -> return False
+
+    else do
+      putStrLn ("Can't find rootfs " ++ (dir_ </> path) ++ ".")
+      return False
+
+-- | Same as checkout but for local directories instead of repositories.
+copyLocalGraftRootFs :: FilePath -> FilePath -> IO ()
+copyLocalGraftRootFs path p = do
+  let dir_ = "/home/worker/checkout"
+  (_, out, err) <- readProcessWithExitCode "cp"
+    [ "-r", p, dir_ </> path
+    ]
+    ""
+  putStrLn out
+  putStrLn err
+
+-- TODO Pretty-print the json.
+writeBuildInfo gu@GitUrl{..} imagename path commit = do
+  let dir_ = "/home/worker/checkout"
+  LB.writeFile (dir_ </> path </> "BUILD-INFO")
     (encode BuildInfo
-      { biRepository = "git@github.com:" ++
+      { biRepository = gitService gu ++
           (gitUrlUsername </> gitUrlRepository) ++ ".git"
       , biBranch = gitUrlBranch
       , biCommit = commit
@@ -429,13 +491,13 @@ maybePushImage imagename = do
         ExitFailure _ -> return False
     else return True
 
-maybeNotifySlack channel repository branch imagename mcommit merror = do
+maybeNotifySlack channel gu imagename mcommit merror = do
   slackHookUrl <- lookupEnv "SLACK_HOOK_URL"
   case slackHookUrl of
     Nothing -> return ()
     Just hookUrl -> do
       putStrLn ("Notifying Slack for " ++ imagename ++ "...")
-      let sn = slackNotification channel repository branch imagename mcommit merror
+      let sn = slackNotification channel gu imagename mcommit merror
       -- TODO This can raise an exception if the URL is invalid.
       post hookUrl (toJSON sn)
       return ()
@@ -483,16 +545,24 @@ formatImageName (ImageName n t) = BC.pack (n ++ maybe "" (":" ++) t)
 
 ------------------------------------------------------------------------------
 data GitUrl = GitUrl
-  { gitUrlUsername :: String
+  { gitHostingService :: GitHostingService
+  , gitUrlUsername :: String
   , gitUrlRepository :: String
   , gitUrlBranch :: String
   }
   deriving Show
 
+data GitHostingService = Bitbucket | GitHub
+  deriving Show
+
+gitService GitUrl{..} = case gitHostingService of
+  Bitbucket -> "git@bitbucket.org:"
+  GitHub -> "git@github.com:"
+
 gitUrlParser = GitUrl
-  <$> ((C.string "git@github.com" <?> "GitHub git/ssh only for now")
-  *> (C.char ':' <?> "Missing colon")
-  *> (BC.unpack <$> C.takeWhile1 (C.inClass "-a-zA-Z0-9" )))
+  <$> (((C.string "git@github.com" *> pure GitHub) <|> (C.string "git@bitbucket.org" *> pure Bitbucket))
+  <* (C.char ':' <?> "Missing colon"))
+  <*> (BC.unpack <$> C.takeWhile1 (C.inClass "-a-zA-Z0-9" ))
   <* (C.char '/')
   <*> (BC.unpack <$> C.takeWhile1 (C.inClass "-a-zA-Z0-9" ))
   <* (C.option ".git" (C.string ".git"))
@@ -500,8 +570,8 @@ gitUrlParser = GitUrl
     (C.char '#' *> (BC.unpack <$> C.takeWhile1 (C.inClass "-a-zA-Z0-9" ))))
   <* C.endOfInput
 
-formatGitUrl GitUrl{..} =
-  "git@github.com:" ++ gitUrlUsername ++ "/" ++ gitUrlRepository
+formatGitUrl gu@GitUrl{..} =
+  gitService gu ++ gitUrlUsername ++ "/" ++ gitUrlRepository
   ++ ".git#" ++ gitUrlBranch
 
 parseGitUrl = parseOnly gitUrlParser . BC.pack
@@ -571,6 +641,7 @@ data BuildInput = BuildInput
   , inGrafts :: [Graft]
   , inDockerfile :: String
   , inMangleFrom :: Maybe String
+  , inRootFs :: Maybe String
   , inCache :: Bool
   , inChannel :: String
   }
@@ -588,6 +659,8 @@ instance ToJSON BuildInput where
     , "channel" .= inChannel
     ] ++
     (maybe [] ((:[]) . ("mangle-from" .=)) inMangleFrom)
+    ++
+    (maybe [] ((:[]) . ("rootfs" .=)) inRootFs)
 
 instance FromJSON BuildInput where
   parseJSON (Object v) = do
@@ -598,6 +671,7 @@ instance FromJSON BuildInput where
     mgrafts <- v.:? "grafts"
     mdockerfile <- v.:? "dockerfile"
     mmangle <- v.:? "mangle-from"
+    mrootfs <- v.:? "rootfs"
     mcache <- v.:? "cache"
     mchannel <- v.:? "channel"
 
@@ -614,8 +688,43 @@ instance FromJSON BuildInput where
         , inGrafts = rights mgitUrls
         , inDockerfile = maybe "Dockerfile" id mdockerfile
         , inMangleFrom = mmangle
+        , inRootFs = mrootfs
         , inCache = maybe False id mcache
         , inChannel = maybe "#general" id mchannel
+        }
+  parseJSON _ = mzero
+
+-- | This is similar to the `clone` command flags (i.e. `--repo`, `--graft`).
+-- Grafts are given as a list of repositories
+data CloneInput = CloneInput
+  { cinGitUrl :: GitUrl
+  , cinBranch :: String -- TODO This overrides the branch in inGitUrl, maybe a GitUrl variant without the branch would be better.
+  , cinGrafts :: [Graft]
+  }
+  deriving Show
+
+instance ToJSON CloneInput where
+  toJSON CloneInput{..} = object $
+    [ "repository" .= formatGitUrl cinGitUrl
+    , "branch" .= gitUrlBranch cinGitUrl
+    , "grafts" .= map formatGraft cinGrafts
+    ]
+
+instance FromJSON CloneInput where
+  parseJSON (Object v) = do
+    repository <- v .: "repository"
+    mbranch <- v .:? "branch"
+    mgrafts <- v.:? "grafts"
+
+    let mgitUrl = parseOnly gitUrlParser (BC.pack repository)
+        mgitUrls = maybe [] (map (parseOnly graftParser . BC.pack)) mgrafts
+    case (mgitUrl, all isRight mgitUrls) of
+      (Left err, _) -> mzero
+      (_, False) -> mzero
+      (Right gu, True) -> return CloneInput
+        { cinGitUrl = maybe gu (\b -> gu { gitUrlBranch = b }) mbranch
+        , cinBranch = maybe (gitUrlBranch gu) id mbranch
+        , cinGrafts = rights mgitUrls
         }
   parseJSON _ = mzero
 
@@ -663,7 +772,7 @@ instance ToJSON SlackField where
       if sfShort then ["short" .= True] else []
 
 -- `channel` can be e.g. "@thu" or "#general".
-slackNotification channel repository branch imagename mcommit merror = SlackNotification
+slackNotification channel gu imagename mcommit merror = SlackNotification
   { snChannel = channel
   , snUsername = "Zoidberg"
   , snIconEmoji = ":zoidberg:"
@@ -681,12 +790,12 @@ slackNotification channel repository branch imagename mcommit merror = SlackNoti
         ++
         [ SlackField
           { sfMaybeTitle = Just "Repository"
-          , sfValue = repository
+          , sfValue = gitService gu ++ gitUrlUsername gu ++ "/" ++ gitUrlRepository gu
           , sfShort = True
           }
         , SlackField
           { sfMaybeTitle = Just "Branch"
-          , sfValue = branch
+          , sfValue = gitUrlBranch gu
           , sfShort = True
           }
         ]

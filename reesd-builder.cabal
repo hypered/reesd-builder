@@ -19,7 +19,6 @@ library
                        bytestring,
                        cmdargs,
                        directory,
-                       filemanip,
                        filepath,
                        lens,
                        process,
