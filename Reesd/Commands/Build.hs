@@ -22,6 +22,7 @@ import System.Directory (copyFile, createDirectoryIfMissing, doesDirectoryExist,
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode(..))
 import System.FilePath (dropFileName, (</>), (<.>))
+import System.IO (hSetBuffering, stderr, stdout, BufferMode(LineBuffering))
 import System.Process (createProcess, proc, readProcessWithExitCode, waitForProcess, CreateProcess(..), StdStream(..))
 
 import Control.Applicative (pure, (<$>), (<|>), (<*>), (<*), (*>))
@@ -65,6 +66,8 @@ processCmd CmdClone{..} = do
 
 
 processCmd CmdBuild{..} = do
+  hSetBuffering stderr LineBuffering
+  hSetBuffering stdout LineBuffering
   let mgitUrl = parseOnly gitUrlParser (BC.pack cmdRepository)
       mgitUrls = map (parseOnly graftParser . BC.pack) cmdGrafts
   case (mgitUrl, all isRight mgitUrls) of
@@ -74,6 +77,8 @@ processCmd CmdBuild{..} = do
       build cmdChannel cmdClone gu (rights mgitUrls) cmdImage cmdDockerfile cmdMangleFrom cmdCache cmdRootFs
 
 processCmd CmdInput{..} = do
+  hSetBuffering stderr LineBuffering
+  hSetBuffering stdout LineBuffering
   content <- LB.readFile "/input.json"
   case decode content of
     Nothing -> putStrLn "Can't decode stdin input."
@@ -286,25 +291,21 @@ cloneOrUpdate gu@GitUrl{..} = do
     then do
       -- Update when the repository has already been cloned.
       putStrLn ("/home/worker/gits" </> gitUrlRepository <.> "git" ++ " exists, fetching updates...")
-      (code, out, err) <- readProcessWithExitCode "git"
+      (_, _, _, h) <- createProcess (proc "git"
         [ "--git-dir", "/home/worker/gits" </> gitUrlRepository <.> "git"
         , "fetch", "-q", "--tags"
-        ]
-        ""
-      putStrLn out
-      putStrLn err
+        ])
+      code <- waitForProcess h
       return code
     else do
       -- Clone when it is new.
       putStrLn ("/home/worker/gits" </> gitUrlRepository <.> "git" ++ " doesn't exist, cloning...")
-      (code, out, err) <- readProcessWithExitCode "git"
+      (_, _, _, h) <- createProcess (proc "git"
         [ "clone", "--mirror", "-q"
         , gitService gu ++ gitUrlUsername </> gitUrlRepository
         , "/home/worker/gits" </> gitUrlRepository <.> "git"
-        ]
-        ""
-      putStrLn out
-      putStrLn err
+        ])
+      code <- waitForProcess h
       return code
 
   -- Restore original keys if any.
@@ -332,25 +333,23 @@ checkout mgraft GitUrl{..} = do
   br <- case mgraft of
     Nothing -> return gitUrlBranch
     Just branch -> do
-      (code, out, err) <- readProcessWithExitCode "git"
+      (_, _, _, h) <- createProcess (proc "git"
         [ "--git-dir", "/home/worker/gits" </> gitUrlRepository <.> "git"
         , "--work-tree", dir
         , "rev-parse", "--verify", branch
-        ]
-        ""
+        ])
+      code <- waitForProcess h
       case code of
         ExitSuccess -> return branch
         _ -> return gitUrlBranch
 
   putStrLn ("Creating checkout of branch " ++ gitUrlUsername ++ "/" ++ gitUrlRepository ++ "#" ++ br ++ "...")
-  (code, out, err) <- readProcessWithExitCode "git"
+  (_, _, _, h) <- createProcess (proc "git"
     [ "--git-dir", "/home/worker/gits" </> gitUrlRepository <.> "git"
     , "--work-tree", dir
     , "checkout", br, "--", "."
-    ]
-    ""
-  putStrLn out
-  putStrLn err
+    ])
+  _ <- waitForProcess h
 
   putStrLn ("Reading branch SHA1...")
   (code, out, err) <- readProcessWithExitCode "git"
@@ -358,8 +357,8 @@ checkout mgraft GitUrl{..} = do
     , "rev-parse", "--verify", br
     ]
     ""
-  putStrLn out
-  putStrLn err
+  putStr out
+  putStr err
 
   case code of
     ExitSuccess -> return (Just (head (words out))) -- TODO
@@ -369,12 +368,11 @@ checkout mgraft GitUrl{..} = do
 copyLocalGraft :: FilePath -> IO ()
 copyLocalGraft p = do
   let dir_ = "/home/worker/checkout"
-  (_, out, err) <- readProcessWithExitCode "cp"
+  (_, _, _, h) <- createProcess (proc "cp"
     [ "-r", p, dir_
-    ]
-    ""
-  putStrLn out
-  putStrLn err
+    ])
+  _ <- waitForProcess h
+  return ()
 
 -- | Run `docker build`. The Dockerfile path is given relative to
 -- /home/worker/checkout.
@@ -391,7 +389,7 @@ buildDockerfile gu@GitUrl{..} imagename dockerfile mangle cache commit = do
       appendFile (dir_ </> dockerfile) "ADD BUILD-INFO /"
 
       -- Run docker build.
-      (code, out, err) <- readProcessWithExitCode "sudo"
+      (_, _, _, h) <- createProcess (proc "sudo"
         ([ "docker", "build"
         , "-f", (dir_ </> dockerfile)
         , "--force-rm"
@@ -399,10 +397,8 @@ buildDockerfile gu@GitUrl{..} imagename dockerfile mangle cache commit = do
         (if cache then [] else ["--no-cache"]) ++
         [ "-t", imagename
         , dir_ </> dropFileName dockerfile
-        ])
-        ""
-      putStrLn out
-      putStrLn err
+        ]))
+      code <- waitForProcess h
       case code of
         ExitSuccess -> return True
         ExitFailure _ -> return False
@@ -439,12 +435,11 @@ buildRootFs gu@GitUrl{..} imagename path commit = do
 copyLocalGraftRootFs :: FilePath -> FilePath -> IO ()
 copyLocalGraftRootFs path p = do
   let dir_ = "/home/worker/checkout"
-  (_, out, err) <- readProcessWithExitCode "cp"
+  (_, _, _, h) <- createProcess (proc "cp"
     [ "-r", p, dir_ </> path
-    ]
-    ""
-  putStrLn out
-  putStrLn err
+    ])
+  _ <- waitForProcess h
+  return ()
 
 -- TODO Pretty-print the json.
 writeBuildInfo gu@GitUrl{..} imagename path commit = do
@@ -480,12 +475,10 @@ maybePushImage imagename = do
   if f
     then do
       putStrLn ("Pushing image " ++ imagename ++ "...")
-      (code, out, err) <- readProcessWithExitCode "sudo"
+      (_, _, _, h) <- createProcess (proc "sudo"
         [ "docker", "push", imagename
-        ]
-        ""
-      putStrLn out
-      putStrLn err
+        ])
+      code <- waitForProcess h
       case code of
         ExitSuccess -> return True
         ExitFailure _ -> return False
