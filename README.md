@@ -1,12 +1,32 @@
 # Reesd Builder
 
-The `images.reesd.com/reesd/builder` Docker image is used to clone a GitHub
-repository and `docker build` the images found in it.
+This repository contains a small program and associated Docker image to clone
+GitHub and Bitbucket repositories, and `docker build` the images found in them.
+
+The image is available as `images.reesd.com/reesd/builder`.
 
 
 ## Example usage
 
-An example repository is https://github.com/hypered/reesd-hello.
+The following call to `docker run` represents the typical usage of this image
+and is explained below.
+
+```
+> docker run \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v /path/to/github-deploy-ssh:/home/worker/ssh-keys:ro \
+    -v /path/to/dockercfg:/home/worker/.dockercfg:ro \
+    -e "SLACK_HOOK_URL=<see above>" \
+    images.reesd.com/reesd/builder \
+    reesd-build build \
+    --repo git@github.com:hypered/reesd-hello \
+    --image images.reesd.com/reesd/hello \
+    --clone \
+    --channel "#reesd"
+```
+
+This example clones the repository https://github.com/hypered/reesd-hello and
+build its Dockerfile as the `images.reesd.com/reesd/hello` Docker image.
 
 The builder needs:
 
@@ -27,19 +47,8 @@ https://hooks.slack.com/services/xxxxxxxxx/xxxxxxxxx/xxxxxxxxxxxxxxxxxxxxxxxx
 
   When using a `SLACK_HOOK_URL`, a `--channel` option can be given.
 
-```
-> docker run \
-    -v /var/run/docker.sock:/var/run/docker.sock \
-    -v /path/to/github-deploy-ssh:/home/worker/ssh-keys:ro \
-    -v /path/to/dockercfg:/home/worker/.dockercfg:ro \
-    -e "SLACK_HOOK_URL=<see above>" \
-    images.reesd.com/reesd/builder \
-    reesd-build build \
-    --repo git@github.com:hypered/reesd-hello \
-    --image images.reesd.com/reesd/hello \
-    --clone \
-    --channel "#reesd"
-```
+- An optional path to the Dockerfile to build, if it is not found at
+  `./Dockerfile`.
 
 
 ## Multi repositories
@@ -47,9 +56,9 @@ https://hooks.slack.com/services/xxxxxxxxx/xxxxxxxxx/xxxxxxxxxxxxxxxxxxxxxxxx
 It can be useful to be able to clone multiple repositories before building a
 single image. The script `build` supports multiple repositories.
 
-The "main" repository, the one provided through the `--repo` option, should
-contain a Dockerfile at its root. The other repositories, given using the
-`--graft` option, are checked out within the main one.
+The "main" repository, the one provided through the `--repo` option, is cloned
+first. The other repositories, given using the `--graft` option, are checked
+out within the main one.
 
 ```
 docker run \
@@ -91,3 +100,6 @@ The script creates a directory hierarchy that looks like
   - reesd-repo-1/
   - reesd-repo-2/
 ```
+
+Note: if you don't need anything meaningful, an empty repository such as
+https://github.com/hypered/empty can be used as the "main" one.
