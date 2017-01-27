@@ -11,18 +11,18 @@ The image is available as `images.reesd.com/reesd/builder`.
 The following call to `docker run` represents the typical usage of this image
 and is explained below.
 
-```
-> docker run \
-    -v /var/run/docker.sock:/var/run/docker.sock \
-    -v /path/to/github-deploy-ssh:/home/worker/ssh-keys:ro \
-    -v /path/to/dockercfg:/home/worker/.dockercfg:ro \
-    -e "SLACK_HOOK_URL=<see above>" \
-    images.reesd.com/reesd/builder \
-    reesd-build build \
-    --repo git@github.com:hypered/reesd-hello \
-    --image images.reesd.com/reesd/hello \
-    --clone \
-    --channel "#reesd"
+```bash
+docker run \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /path/to/github-deploy-ssh:/home/worker/ssh-keys:ro \
+  -v /path/to/dockercfg:/home/worker/.dockercfg:ro \
+  -e "SLACK_HOOK_URL=<see above>" \
+  images.reesd.com/reesd/builder \
+  reesd-build build \
+  --repo git@github.com:hypered/reesd-hello \
+  --image images.reesd.com/reesd/hello \
+  --clone \
+  --channel "#reesd"
 ```
 
 This example clones the repository https://github.com/hypered/reesd-hello and
@@ -60,7 +60,7 @@ The "main" repository, the one provided through the `--repo` option, is cloned
 first. The other repositories, given using the `--graft` option, are checked
 out within the main one.
 
-```
+```bash
 docker run \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /home/thu/projects/reesd-builder/ssh-keys:/home/worker/ssh-keys:ro \
@@ -77,7 +77,7 @@ docker run \
 If cloning is not desired, e.g. you provide the repositories through bind
 mounting, you can leave out the `--clone` flag:
 
-```
+```bash
 docker run \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /home/thu/projects/reesd-multi-hello/.git:/home/worker/gits/reesd-multi-hello.git \
@@ -110,3 +110,12 @@ https://github.com/hypered/empty can be used as the "main" one.
 Instead of crafting calls to `docker run` as shown above, it is possible to
 give the equivalent to all the `build` arguments as a JSON file. See the
 [`run.sh`](run.sh) example, which can be called as e.g. `./run.sh hello.json`.
+
+Building the [`hello.json`](hello.json) file, reproduced below, is equivalent
+to the first example above.
+
+```json
+{ "repository": "git@github.com:hypered/reesd-hello",
+  "image": "images.reesd.com/reesd/hello"
+}
+```
