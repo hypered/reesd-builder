@@ -11,7 +11,7 @@ The image is available as `images.reesd.com/reesd/builder`.
 The following call to `docker run` represents the typical usage of this image
 and is explained below.
 
-```bash
+```
 docker run \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /path/to/github-deploy-ssh:/home/worker/ssh-keys:ro \
@@ -60,7 +60,7 @@ The "main" repository, the one provided through the `--repo` option, is cloned
 first. The other repositories, given using the `--graft` option, are checked
 out within the main one.
 
-```bash
+```
 docker run \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /home/thu/projects/reesd-builder/ssh-keys:/home/worker/ssh-keys:ro \
@@ -77,7 +77,7 @@ docker run \
 If cloning is not desired, e.g. you provide the repositories through bind
 mounting, you can leave out the `--clone` flag:
 
-```bash
+```
 docker run \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /home/thu/projects/reesd-multi-hello/.git:/home/worker/gits/reesd-multi-hello.git \
