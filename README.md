@@ -103,3 +103,10 @@ The script creates a directory hierarchy that looks like
 
 Note: if you don't need anything meaningful, an empty repository such as
 https://github.com/hypered/empty can be used as the "main" one.
+
+
+## JSON input
+
+Instead of crafting calls to `docker run` as shown above, it is possible to
+give the equivalent to all the `build` arguments as a JSON file. See the
+[`run.sh`](run.sh) example, which can be called as e.g. `./run.sh hello.json`.

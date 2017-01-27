@@ -1,5 +1,10 @@
 #! /bin/bash
 
+# This is an example script. Credentials must give through the `-v` flags
+# below and paths are specific to some machine.
+
+# Equivalent to ./run.sh hello.json.
+
 SLACK_HOOK_URL=$(cat /home/thu/projects/reesd-on-premises/reesd/slack-hook-url.txt)
 
 docker run \

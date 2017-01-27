@@ -1,0 +1,3 @@
+{ "repository": "git@github.com:hypered/reesd-hello",
+  "image": "images.reesd.com/reesd/hello"
+}
