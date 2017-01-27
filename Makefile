@@ -9,5 +9,8 @@ reesd-builder-docker-image.tar.xz: .builder_touched
 	docker save images.reesd.com/reesd/builder > reesd-builder-docker-image.tar
 	xz reesd-builder-docker-image.tar
 
-dist/build/reesd-build/reesd-build: bin/reesd-build.hs Reesd/Commands/Build.hs
-	./build.sh
+dist/build/reesd-build/reesd-build: bin/reesd-build.hs reesd-builder.cabal Reesd/Commands/Build.hs
+	docker run \
+          -v `pwd`:/home/gusdev/reesd-builder \
+          images.reesd.com/reesd/stack:7.8.4 \
+          cabal install reesd-builder/reesd-builder.cabal
