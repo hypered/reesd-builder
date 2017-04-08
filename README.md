@@ -36,6 +36,13 @@ The builder needs:
   to build. Normally the public SSH key is added as a read-only "Deploy key" to
   the repository.
 
+  It should also contain a `known_hosts` file. It can be created with:
+
+```
+ssh-keyscan -t rsa bitbucket.org >> ssh-keys/known_hosts
+ssh-keyscan -t rsa github.com >> ssh-keys/known_hosts
+```
+
 - An optional `.dockercfg` file (when present, it is used to push the image).
 
 - An optional `SLACK_HOOK_URL` environment variable. Its content is a "Incoming
