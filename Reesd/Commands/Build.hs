@@ -76,7 +76,7 @@ processCmd CmdBuild{..} = do
     (Right gu@GitUrl{..}, True) ->
       build cmdChannel cmdClone gu (rights mgitUrls) cmdImage cmdDockerfile cmdMangleFrom cmdCache cmdRootFs
 
-processCmd CmdInput{..} = do
+processCmd CmdInput = do
   hSetBuffering stderr LineBuffering
   hSetBuffering stdout LineBuffering
   content <- LB.readFile "/input.json"

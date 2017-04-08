@@ -6,6 +6,16 @@ GitHub and Bitbucket repositories, and `docker build` the images found in them.
 The image is available as `images.reesd.com/reesd/builder`.
 
 
+## Building
+
+Example Makefile usage:
+
+```
+make # default to GHC 7.8.4
+STACK_IMAGE=7.10.3 make
+```
+
+
 ## Example usage
 
 The following call to `docker run` represents the typical usage of this image
