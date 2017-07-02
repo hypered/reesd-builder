@@ -25,7 +25,7 @@ import System.FilePath (dropFileName, (</>), (<.>))
 import System.IO (hSetBuffering, stderr, stdout, BufferMode(LineBuffering))
 import System.Process (createProcess, proc, readProcessWithExitCode, waitForProcess, CreateProcess(..), StdStream(..))
 
-import Control.Applicative (pure, (<$>), (<|>), (<*>), (<*), (*>))
+import Control.Applicative ((<|>))
 import qualified Data.ByteString.Char8 as BC
 import Data.Attoparsec.ByteString (parseOnly, takeByteString, (<?>), Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as C
