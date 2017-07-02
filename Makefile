@@ -1,6 +1,6 @@
 all: .builder_touched
 
-STACK_IMAGE ?= 7.8.4
+STACK_IMAGE ?= 7.10.3
 
 .builder_touched: Dockerfile dist/build/reesd-build/reesd-build
 	docker build -t images.reesd.com/reesd/builder .
